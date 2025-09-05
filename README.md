@@ -1,12 +1,5 @@
 # MSone മലയാളം subtitles API (unofficial)
 
-> After November 28th, 2022, Heroku is terminating is free plans, Live API wont function after that.
-
-Base URL: `https://malayalam-subtitles.herokuapp.com/<imdb-id>`
-
-example: `GET` https://malayalam-subtitles.herokuapp.com/tt6723592
-
-result:
 
 ```json
 {
