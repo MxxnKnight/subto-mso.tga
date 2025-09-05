@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: subtitle-bot
+    env: python
+    pythonVersion: "3.11" # Specify a Python version
+    plan: free # Specify the free tier
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
+      echo "Starting scraper to build database..."
+      python scraper.py
+      echo "Scraper finished."
+    startCommand: "gunicorn app:app"
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        value: "" # User must set this in the Render dashboard
+      - key: WEBHOOK_URL
+        fromService:
+          type: web
+          name: subtitle-bot
+          property: url # Automatically uses the service's public URL
+      - key: PYTHON_VERSION
+        value: "3.11"
