@@ -5,6 +5,7 @@ import requests
 import io
 import zipfile
 import re
+import asyncio
 from flask import Flask, request, jsonify
 import telegram
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -275,7 +276,6 @@ async def handle_season_selection(query, season_url, context):
                 logger.info(f"Season not in DB, scraping on the fly: {season_url}")
                 details = scrape_detail_page(season_url)
                 if details:
-                    # This is a temporary solution for the demo
                     await send_detailed_view_from_data(query.message, details)
                 else:
                     await query.edit_message_text(text="Could not find details for this season.")
@@ -286,7 +286,6 @@ async def handle_season_selection(query, season_url, context):
 
 async def send_detailed_view_from_data(message, entry):
     """A version of send_detailed_view that takes data directly, for on-the-fly scraping."""
-    # This is a simplified version for the demo.
     title = escape_markdown_v2(entry.get('title', 'N/A'))
     poster = entry.get('posterMalayalam')
     imdb_url = entry.get('imdbURL')
@@ -336,17 +335,22 @@ async def webhook():
     return 'ok'
 
 @app.route('/set_webhook', methods=['GET'])
-async def set_webhook():
-    """A route to manually set the webhook (for development)."""
+def set_webhook():
+    """A route to manually set the webhook."""
     if TOKEN == "dummy_token":
         return "Cannot set webhook with a dummy token.", 400
 
     webhook_base_url = os.environ.get("WEBHOOK_URL")
     if not webhook_base_url:
+        logger.error("WEBHOOK_URL environment variable not set!")
         return "WEBHOOK_URL environment variable not set!", 500
 
     webhook_url = f'{webhook_base_url}/telegram'
-    success = await bot.set_webhook(webhook_url)
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    success = loop.run_until_complete(bot.set_webhook(webhook_url))
+
     if success:
         logger.info(f"Webhook set successfully to {webhook_url}")
         return f"Webhook set to {webhook_url}"
@@ -362,4 +366,5 @@ application.add_handler(CallbackQueryHandler(button))
 
 if __name__ == '__main__':
     logger.info("Starting Flask app for local development...")
+    # Note: This app.run is for local dev only. Gunicorn runs the app in production.
     app.run(debug=True, port=5000)
