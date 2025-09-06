@@ -19,5 +19,7 @@ services:
           type: web
           name: subtitle-bot
           property: url # Automatically uses the service's public URL
+      - key: OWNER_ID
+        value: "" # User must set this for startup notifications
       - key: PYTHON_VERSION
         value: "3.11"
