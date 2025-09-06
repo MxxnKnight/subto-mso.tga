@@ -3,4 +3,3 @@ beautifulsoup4
 Flask[async]
 python-telegram-bot
 gunicorn
-uvicorn
