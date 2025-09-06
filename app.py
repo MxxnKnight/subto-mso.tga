@@ -1,10 +1,13 @@
 import os
 import json
 import logging
+import requests
+import io
+import zipfile
 from flask import Flask, request, jsonify
 import telegram
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
 # --- Logging Setup ---
 logging.basicConfig(
@@ -46,7 +49,7 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     
     results = [
         (imdb_id, entry) for imdb_id, entry in db.items() 
-        if entry.get('title', '').lower().replace('.', ' ').strip().includes(query)
+        if query in entry.get('title', '').lower().replace('.', ' ').strip()
     ]
 
     if not results:
@@ -59,13 +62,20 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         title = result.get('title', 'N/A').replace('\n', ' ').replace('\t', '').strip()
         poster = result.get('posterMalayalam')
         imdb_url = result.get('imdbURL')
-        download_url = result.get('srtURL')
 
         caption = f"*{title}*\n\n[IMDb]({imdb_url})"
         
         keyboard = []
-        if download_url:
-            keyboard.append([InlineKeyboardButton("Download Subtitle", url=download_url)])
+        if result.get('isSeries') and result.get('seasons'):
+            for season in result['seasons']:
+                # Use imdb_id and season name as callback data to fetch the correct entry
+                callback_data = f"season:{imdb_id}:{season['season_name']}"
+                keyboard.append([InlineKeyboardButton(season['season_name'], callback_data=callback_data)])
+        else:
+            download_url = result.get('srtURL')
+            if download_url:
+                callback_data = f"download:{imdb_id}"
+                keyboard.append([InlineKeyboardButton("Download Subtitle", callback_data=callback_data)])
         
         reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
 
@@ -87,12 +97,73 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 )
         except Exception as e:
             logger.error(f"Failed to send message for '{title}'. Error: {e}")
-            # Fallback for failed photo sending
             await bot.send_message(
                 chat_id=update.effective_chat.id,
-                text=f"{caption}\nDownload: {download_url}",
-                parse_mode='Markdown'
+                text=caption,
+                parse_mode='Markdown',
+                reply_markup=reply_markup
             )
+
+async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Parses the CallbackQuery and sends the subtitle file."""
+    query = update.callback_query
+    await query.answer()
+
+    data_parts = query.data.split(':')
+    action = data_parts[0]
+    imdb_id = data_parts[1]
+
+    entry = db.get(imdb_id)
+    if not entry:
+        await query.edit_message_text(text="Sorry, I couldn't find that entry.")
+        return
+
+    if action == 'download':
+        download_url = entry.get('srtURL')
+        if download_url:
+            try:
+                await query.edit_message_text(text="Downloading subtitle...")
+                response = requests.get(download_url)
+                response.raise_for_status()
+
+                content_type = response.headers.get('content-type')
+
+                if 'zip' in content_type:
+                    with io.BytesIO(response.content) as zip_stream:
+                        with zipfile.ZipFile(zip_stream) as zip_file:
+                            for file_info in zip_file.infolist():
+                                if file_info.filename.endswith('.srt'):
+                                    with zip_file.open(file_info) as srt_file:
+                                        await context.bot.send_document(
+                                            chat_id=query.message.chat_id,
+                                            document=srt_file.read(),
+                                            filename=file_info.filename
+                                        )
+                    await query.delete_message()
+                else:
+                    file_name = f"{entry.get('title', 'subtitle')}.srt"
+                    file_stream = io.BytesIO(response.content)
+
+                    await context.bot.send_document(
+                        chat_id=query.message.chat_id,
+                        document=file_stream,
+                        filename=file_name
+                    )
+                    await query.delete_message()
+            except requests.RequestException as e:
+                logger.error(f"Failed to download file: {e}")
+                await query.edit_message_text(text="Sorry, I could not download the subtitle file.")
+
+    elif action == 'season':
+        season_name = data_parts[2]
+        # This part will be enhanced later to handle season-specific downloads
+        download_url = entry.get('srtURL')
+        if download_url:
+            callback_data = f"download:{imdb_id}"
+            keyboard = [[InlineKeyboardButton("Download Subtitle", callback_data=callback_data)]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_caption(caption=f"*{season_name}*", reply_markup=reply_markup, parse_mode='Markdown')
+
 
 
 # --- Flask API Routes ---
@@ -135,6 +206,7 @@ def set_webhook():
 application = Application.builder().token(TOKEN).build()
 application.add_handler(CommandHandler("start", start))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search))
+application.add_handler(CallbackQueryHandler(button))
 
 if __name__ == '__main__':
     # This part is for local development and won't be used by Gunicorn on Render
