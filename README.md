@@ -1,104 +1,52 @@
 # MSone Malayalam Subtitles Bot & API
 
-This project provides a comprehensive solution for accessing Malayalam subtitles from `malayalamsubtitles.org` via a Telegram bot and a JSON API. The bot is feature-rich, offering an interactive UI, direct file downloads, and detailed information for movies and series.
+This project provides a simple and robust foundation for a Telegram bot and JSON API to interact with subtitles from `malayalamsubtitles.org`. It is designed to be deployed on a platform like Render.
 
-## Features
+## Architecture
 
-- **Advanced Scraper:** A robust scraper (`scrapper.py`) that builds a local database of all subtitles and their detailed metadata.
-- **Interactive Telegram Bot:**
-    - **Menu System:** Easy navigation with `/start`, `Help`, `About`, and `TOS` pages using inline buttons.
-    - **Smart Search:** Search for movies or series. The bot provides a list of choices for multiple matches or a detailed view for a single match.
-    - **Detailed View:** Displays rich information including a poster, title, IMDb rating, certification, genre, director, synopsis, and poster designer credits.
-    - **Direct File Downloads:** Instead of links, the bot sends the `.srt` file directly to you.
-    - **ZIP File Handling:** Automatically extracts `.srt` files from ZIP archives.
-    - **Series Navigation:** Displays different seasons as inline buttons for easy selection.
-- **JSON API:** A simple Flask-based API (`app.py`) to serve the scraped data.
+This project uses a **synchronous web server (Flask + Gunicorn)** to handle incoming HTTP requests. To interact with the **asynchronous `python-telegram-bot` library**, it uses a standard Python pattern: it creates a temporary, isolated `asyncio` event loop to run the async bot functions safely from within the synchronous Flask routes.
 
-## Workflow
+This "async bridge" provides a stable and reliable way to handle the two different programming models in a single application.
 
-The system is designed in two main parts to be fast and efficient:
+The project is composed of two main Python files:
+-   `scrapper.py`: A script to scrape the website and build a local `db.json` database.
+-   `app.py`: A Flask application that serves both the API and the Telegram bot's webhook endpoints.
 
-1.  **The Scraper (`scrapper.py`):** This script acts as the data-gathering engine. It's designed to be run on a schedule (e.g., daily using a cron job). It scrapes `malayalamsubtitles.org`, collects details for every entry, and saves it all into the `db.json` file. This file acts as a fast, local database.
+## Setup & Deployment on Render
 
-2.  **The API & Bot (`app.py`):** This is the user-facing part of the application. It reads from the pre-populated `db.json` file. This means user interactions are nearly instant and don't require slow, on-demand scraping of the website. This architecture also makes the bot more reliable and respectful of the source website's servers.
+1.  **Fork this repository.**
 
-## Example Bot Interaction
+2.  **Create a new Web Service on Render** and connect it to your forked repository.
 
-**1. User searches for "Shōgun"**
-> **Bot:** I found multiple results for "Shōgun". Please select one:
-> `[ Shōgun Season 1 ഷോഗൺ സീസൺ 1 (2024) ]`
-> `[ Shōgun (1980) ]`
+3.  **Set Environment Variables:**
+    In your Render service dashboard, go to the **"Environment"** tab and add the following secret files and environment variables:
 
-**2. User selects "Shōgun Season 1"**
-> **Bot sends a message with a poster:**
->
-> **Shōgun Season 1 ഷോഗൺ സീസൺ 1 (2024)**
->
-> `എംസോൺ റിലീസ് – 3400`
->
-> **Rating:** 8.6/10 | **Certification:** NC-17
-> **Director:** N/A
-> **Genre:** അഡ്വെഞ്ചർ,ഡ്രാമ,വാർ
->
-> _പതിനാറാം നൂറ്റാണ്ടിൽ പോർച്ചുഗീസ് നാവികനായ മഗല്ലൻ..._
->
-> Poster by: [നിഷാദ് ജെ.എൻ](https://malayalamsubtitles.org/designers/nishad-jn/)
->
-> [IMDb](https://www.imdb.com/title/tt2788316/)
->
-> `[ Download Subtitle ]`
+    *   **`BOT_TOKEN`**: Your secret token for your Telegram bot from BotFather.
+    *   **`WEBHOOK_URL`**: The public URL of your Render service (e.g., `https://my-bot-name.onrender.com`). You need to set this manually.
 
-## Setup & Installation
+4.  **Build and Start Commands:**
+    Render will use the `render.yaml` file to configure the service. It will automatically:
+    *   Install dependencies from `requirements.txt`.
+    *   Run the scraper to build `db.json`.
+    *   Start the server with `gunicorn app:app`.
 
-1.  **Clone the repository:**
-    ```bash
-    git clone <repository-url>
-    cd <repository-directory>
-    ```
+5.  **Set the Webhook (One-time step):**
+    After your service is deployed and "live", you must visit the `/set_webhook` URL in your browser **once** to tell Telegram where to send messages.
 
-2.  **Install dependencies:**
-    ```bash
-    pip install -r requirements.txt
-    ```
+    `https://your-service-url.onrender.com/set_webhook`
 
-3.  **Create the database:**
-    Run the scraper to build the `db.json` file.
-    ```bash
-    python scrapper.py
-    ```
-
-4.  **Set Environment Variables:**
-    The Telegram bot requires a bot token. Set it as an environment variable.
-    ```bash
-    export TELEGRAM_BOT_TOKEN="YOUR_TELEGRAM_BOT_TOKEN"
-    ```
-
-5.  **Run the application:**
-    ```bash
-    python app.py
-    ```
-    The Flask server will start, and the bot will be active.
+    You should see a "Webhook set successfully" message. Your bot is now live and will respond to messages.
 
 ## API Usage
 
-The API provides a simple endpoint to get movie data by IMDb ID.
+The API provides a simple test endpoint.
 
-- **Base URL:** `http://127.0.0.1:5000/`
-- **Endpoint:** `GET /api/<imdb_id>`
-
-**Example:**
-`GET http://127.0.0.1:5000/api/tt2788316`
-
-**Result:**
-```json
-{
-    "title": "Shōgun Season 1 ഷോഗൺ സീസൺ 1 (2024)",
-    "posterMalayalam": "https://malayalamsubtitles.org/wp-content/uploads/2024/10/SHOGUN-SE01-768x1084.jpg.webp",
-    "descriptionMalayalam": "പതിനാറാം നൂറ്റാണ്ടിൽ...",
-    "msoneReleaseNumber": "എംസോൺ റിലീസ് – 3400",
-    "imdbURL": "https://www.imdb.com/title/tt2788316/",
-    "imdbRating": "8.6/10",
-    "certification": "NC-17",
-    ...
-}
-```
+- **Endpoint:** `GET /api/subtitles`
+- **Example:** `https://your-service-url.onrender.com/api/subtitles`
+- **Result:**
+  ```json
+  {
+      "status": "ok",
+      "message": "This is a test API endpoint."
+  }
+  ```
