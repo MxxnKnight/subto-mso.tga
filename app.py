@@ -22,40 +22,18 @@ logger = logging.getLogger(__name__)
 # --- Bot and Flask Setup ---
 TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 if not TOKEN:
-    TOKEN = "dummy_token" # for local testing
-    logger.warning("Using a dummy Telegram token for testing.")
+    # This is a fallback for local testing, not for production
+    TOKEN = "dummy_token"
+    logger.warning("TELEGRAM_BOT_TOKEN environment variable not found. Using a dummy token.")
 
 bot = telegram.Bot(token=TOKEN)
 app = Flask(__name__)
-
-# --- Set Webhook on startup ---
-if TOKEN != "dummy_token":
-    webhook_url = os.environ.get("WEBHOOK_URL")
-    if webhook_url:
-        full_webhook_url = f"{webhook_url}/telegram"
-        logger.info(f"Setting webhook to {full_webhook_url}")
-        # We need to run this in an async context
-        import asyncio
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:  # 'get_running_loop' fails if no loop is running
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-        success = loop.run_until_complete(bot.set_webhook(full_webhook_url))
-
-        if success:
-            logger.info("Webhook set successfully.")
-        else:
-            logger.error("Webhook setup failed!")
-    else:
-        logger.warning("WEBHOOK_URL not set, skipping webhook setup.")
 
 # --- Load Database ---
 try:
     with open('db.json', 'r', encoding='utf-8') as f:
         db = json.load(f)
-    logger.info(f"Successfully loaded db.json with {len(db)} entries.")
+    logger.info("Successfully loaded db.json.")
 except FileNotFoundError:
     db = {}
     logger.warning("db.json not found. The bot will not have data to search.")
@@ -291,19 +269,55 @@ async def handle_season_selection(query, season_url, context):
         imdb_button = season_soup.select_one('a#imdb-button')
         if imdb_button and imdb_button.has_attr('href'):
             imdb_id = extract_imdb_id(imdb_button['href'])
-            if imdb_id:
-                # We have the IMDb ID, now trigger the download for it.
-                await download_and_send(query, imdb_id, context)
+            if imdb_id and imdb_id in db:
+                await send_detailed_view(query.message, imdb_id)
             else:
-                await query.edit_message_text(text="Could not find IMDb ID for this season.")
+                logger.info(f"Season not in DB, scraping on the fly: {season_url}")
+                details = scrape_detail_page(season_url)
+                if details:
+                    # This is a temporary solution for the demo
+                    await send_detailed_view_from_data(query.message, details)
+                else:
+                    await query.edit_message_text(text="Could not find details for this season.")
         else:
             await query.edit_message_text(text="Could not find IMDb button for this season.")
     else:
         await query.edit_message_text(text="Could not fetch season page.")
 
+async def send_detailed_view_from_data(message, entry):
+    """A version of send_detailed_view that takes data directly, for on-the-fly scraping."""
+    # This is a simplified version for the demo.
+    title = escape_markdown_v2(entry.get('title', 'N/A'))
+    poster = entry.get('posterMalayalam')
+    imdb_url = entry.get('imdbURL')
+    caption = f"*{title}*\n\n[IMDb]({imdb_url})"
+
+    imdb_id = extract_imdb_id(imdb_url)
+    callback_data = f"download:{imdb_id}"
+    keyboard = [[InlineKeyboardButton("Download Subtitle", callback_data=callback_data)]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await message.delete()
+    if poster:
+        await bot.send_photo(
+            chat_id=message.chat.id,
+            photo=poster,
+            caption=caption,
+            parse_mode=ParseMode.MARKDOWN_V2,
+            reply_markup=reply_markup
+        )
+    else:
+        await bot.send_message(
+            chat_id=message.chat.id,
+            text=caption,
+            parse_mode=ParseMode.MARKDOWN_V2,
+            reply_markup=reply_markup
+        )
+
 # --- Flask API Routes ---
 @app.route('/')
 def index():
+    logger.info("API is live and running.")
     return "API and Bot Server is running."
 
 @app.route('/api/<imdb_id>')
@@ -322,17 +336,22 @@ async def webhook():
     return 'ok'
 
 @app.route('/set_webhook', methods=['GET'])
-def set_webhook():
+async def set_webhook():
     """A route to manually set the webhook (for development)."""
+    if TOKEN == "dummy_token":
+        return "Cannot set webhook with a dummy token.", 400
+
     webhook_base_url = os.environ.get("WEBHOOK_URL")
     if not webhook_base_url:
         return "WEBHOOK_URL environment variable not set!", 500
 
     webhook_url = f'{webhook_base_url}/telegram'
-    success = bot.set_webhook(webhook_url)
+    success = await bot.set_webhook(webhook_url)
     if success:
+        logger.info(f"Webhook set successfully to {webhook_url}")
         return f"Webhook set to {webhook_url}"
     else:
+        logger.error("Webhook setup failed!")
         return "Webhook setup failed!", 500
 
 # --- Application Setup ---
