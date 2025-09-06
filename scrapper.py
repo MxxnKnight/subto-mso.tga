@@ -50,26 +50,52 @@ def scrape_detail_page(url):
     desc_tag = soup.select_one('div#synopsis')
     details['descriptionMalayalam'] = desc_tag.get_text(strip=True) if desc_tag else "N/A"
 
+    # MSone Release Number
+    release_no_tag = soup.select_one('h4#release-number')
+    details['msoneReleaseNumber'] = release_no_tag.get_text(strip=True) if release_no_tag else "N/A"
+
     # IMDb URL
     imdb_tag = soup.select_one('a#imdb-button')
     details['imdbURL'] = imdb_tag['href'] if imdb_tag else None
 
     # SRT URL
     srt_tag = soup.select_one('a#download-button')
-    details['srtURL'] = srt_tag['data-downloadurl'] if srt_tag and 'data-downloadurl' in srt_tag.attrs else None
+    details['srtURL'] = srt_tag.get('data-downloadurl') or srt_tag.get('href') if srt_tag else None
 
-    # Translated By
+    # --- Table Data ---
+    details['language'] = "N/A"
+    details['production'] = "N/A"
+    details['genre'] = "N/A"
+    details['translatedBy'] = {'name': 'N/A', 'url': None}
+
     try:
-        translator_tag = soup.select_one('#release-details-table tbody tr:nth-of-type(3) td:nth-of-type(2) a')
-        if translator_tag:
-            details['translatedBy'] = {
-                'name': translator_tag.get_text(strip=True),
-                'url': translator_tag['href']
-            }
-        else:
-            details['translatedBy'] = {'name': 'N/A', 'url': None}
-    except Exception:
-        details['translatedBy'] = {'name': 'N/A', 'url': None}
+        table = soup.select_one('table#release-details-table')
+        if table:
+            rows = table.find_all('tr')
+            for row in rows:
+                cells = row.find_all('td')
+                if len(cells) == 2:
+                    key = cells[0].get_text(strip=True)
+                    value_cell = cells[1]
+
+                    if 'ഭാഷ' in key:
+                        details['language'] = value_cell.get_text(strip=True)
+                    if 'നിർമ്മാണം' in key:
+                        details['production'] = value_cell.get_text(strip=True)
+                    if 'ജോണർ' in key:
+                        details['genre'] = value_cell.get_text(strip=True)
+                    if 'പരിഭാഷ' in key:
+                        translator_tag = value_cell.find('a')
+                        if translator_tag:
+                            details['translatedBy'] = {
+                                'name': translator_tag.get_text(strip=True),
+                                'url': translator_tag['href']
+                            }
+                        else:
+                            details['translatedBy'] = {'name': value_cell.get_text(strip=True), 'url': None}
+    except Exception as e:
+        print(f"    Error parsing table: {e}")
+        pass
 
     return details
 
@@ -87,13 +113,16 @@ def main():
         if not list_soup:
             break
 
-        entries = list_soup.select('article.loop-entry')
+        entries = list_soup.select('.loop-entry .entry-title a')
+        if not entries:
+            # Try another selector for the archive pages
+            entries = list_soup.select('h2.entry-title a')
+
         if not entries:
             print("No more entries found. Stopping.")
             break
             
-        for entry in entries:
-            link_tag = entry.select_one('h2.entry-title a')
+        for link_tag in entries:
             if link_tag and link_tag.has_attr('href'):
                 detail_url = link_tag['href']
                 post_details = scrape_detail_page(detail_url)
