@@ -28,6 +28,29 @@ if not TOKEN:
 bot = telegram.Bot(token=TOKEN)
 app = Flask(__name__)
 
+# --- Set Webhook on startup ---
+if TOKEN != "dummy_token":
+    webhook_url = os.environ.get("WEBHOOK_URL")
+    if webhook_url:
+        full_webhook_url = f"{webhook_url}/telegram"
+        logger.info(f"Setting webhook to {full_webhook_url}")
+        # We need to run this in an async context
+        import asyncio
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # 'get_running_loop' fails if no loop is running
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+        success = loop.run_until_complete(bot.set_webhook(full_webhook_url))
+
+        if success:
+            logger.info("Webhook set successfully.")
+        else:
+            logger.error("Webhook setup failed!")
+    else:
+        logger.warning("WEBHOOK_URL not set, skipping webhook setup.")
+
 # --- Load Database ---
 try:
     with open('db.json', 'r', encoding='utf-8') as f:
