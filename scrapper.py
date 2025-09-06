@@ -53,6 +53,22 @@ def scrape_detail_page(url):
     imdb_tag = soup.select_one('a#imdb-button')
     details['imdbURL'] = imdb_tag['href'] if imdb_tag else None
 
+    imdb_rating_tag = soup.select_one('a#imdb-button + p')
+    details['imdbRating'] = imdb_rating_tag.get_text(strip=True) if imdb_rating_tag else "N/A"
+
+    certification_tag = soup.select_one('a#release-type-button + p a')
+    details['certification'] = certification_tag.get_text(strip=True) if certification_tag else "N/A"
+
+    poster_designer_tag = soup.select_one('div#release_designer p a:last-child')
+    if poster_designer_tag:
+        details['posterDesigner'] = {
+            'name': poster_designer_tag.get_text(strip=True),
+            'url': poster_designer_tag['href']
+        }
+    else:
+        details['posterDesigner'] = {'name': 'N/A', 'url': None}
+
+
     srt_tag = soup.select_one('a#download-button')
     details['srtURL'] = srt_tag.get('data-downloadurl') or srt_tag.get('href') if srt_tag else None
 

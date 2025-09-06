@@ -1,8 +1,0 @@
-Warning: TELEGRAM_BOT_TOKEN not found. Bot functionality will be disabled.
-Traceback (most recent call last):
-  File "/app/app.py", line 22, in <module>
-    bot = telegram.Bot(token=TOKEN)
-          ^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jules/.pyenv/versions/3.12.11/lib/python3.12/site-packages/telegram/_bot.py", line 328, in __init__
-    raise InvalidToken("You must pass the token you received from https://t.me/Botfather!")
-telegram.error.InvalidToken: You must pass the token you received from https://t.me/Botfather!
