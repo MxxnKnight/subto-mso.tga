@@ -67,6 +67,13 @@ def set_webhook():
 
     if success:
         logger.info(f"Webhook set successfully to {webhook_full_url}")
+
+        # Send startup notification to owner
+        owner_id = os.environ.get("OWNER_ID")
+        if owner_id:
+            loop.run_until_complete(bot.send_message(chat_id=owner_id, text="Bot is up and running!"))
+            logger.info(f"Sent startup notification to OWNER_ID {owner_id}")
+
         return f"Webhook set successfully to {webhook_full_url}"
     else:
         logger.error("Webhook setup failed!")

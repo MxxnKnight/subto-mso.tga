@@ -23,6 +23,7 @@ The project is composed of two main Python files:
 
     *   **`BOT_TOKEN`**: Your secret token for your Telegram bot from BotFather.
     *   **`WEBHOOK_URL`**: The public URL of your Render service (e.g., `https://my-bot-name.onrender.com`). You need to set this manually.
+    *   **`OWNER_ID`**: Your personal Telegram User ID. The bot will send a startup notification to this ID.
 
 4.  **Build and Start Commands:**
     Render will use the `render.yaml` file to configure the service. It will automatically:
