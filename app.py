@@ -23,7 +23,6 @@ logger = logging.getLogger(__name__)
 # --- Bot and Flask Setup ---
 TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 if not TOKEN:
-    # This is a fallback for local testing, not for production
     TOKEN = "dummy_token"
     logger.warning("TELEGRAM_BOT_TOKEN environment variable not found. Using a dummy token.")
 
@@ -83,7 +82,6 @@ def get_back_keyboard():
     ])
 
 def escape_markdown_v2(text):
-    """Escapes strings for Telegram's MarkdownV2 parser."""
     if not isinstance(text, str):
         return ''
     escape_chars = r'_*[]()~`>#+-=|{}.!'
@@ -91,12 +89,10 @@ def escape_markdown_v2(text):
 
 # --- Bot Handler Functions ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Sends a welcome message when the /start command is issued."""
     logger.info(f"Received /start command from {update.effective_user.name}")
     await update.message.reply_text(HOME_TEXT, reply_markup=get_home_keyboard())
 
 async def search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Searches for subtitles based on user's message."""
     query = update.message.text.lower()
     logger.info(f"Received search query: '{query}' from user {update.effective_user.name}")
     
@@ -116,7 +112,7 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await send_detailed_view(status_message, results[0][0])
     else:
         keyboard = []
-        for imdb_id, entry in results[:10]: # Limit to 10 results
+        for imdb_id, entry in results[:10]:
             keyboard.append([InlineKeyboardButton(entry['title'], callback_data=f"select:{imdb_id}")])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -126,7 +122,6 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
 
 async def send_detailed_view(message, imdb_id):
-    """Formats and sends the detailed view for a movie/series."""
     logger.info(f"Sending detailed view for IMDb ID: {imdb_id}")
     entry = db.get(imdb_id)
     if not entry:
@@ -191,13 +186,10 @@ async def send_detailed_view(message, imdb_id):
         )
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Parses the CallbackQuery."""
     query = update.callback_query
     await query.answer()
-
     data = query.data
     logger.info(f"Received callback query with data: {data}")
-
     action, _, value = data.partition(':')
 
     if action == 'close':
@@ -218,7 +210,6 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await handle_season_selection(query, value, context)
 
 async def download_and_send(query, imdb_id, context):
-    """Downloads and sends the subtitle file."""
     logger.info(f"Initiating download for IMDb ID: {imdb_id}")
     entry = db.get(imdb_id)
     if not entry:
@@ -262,7 +253,6 @@ async def download_and_send(query, imdb_id, context):
             await query.edit_message_text(text="Sorry, I could not download the subtitle file.")
 
 async def handle_season_selection(query, season_url, context):
-    """Handles the selection of a season by scraping its page and triggering a download."""
     logger.info(f"Handling season selection for URL: {season_url}")
     await query.edit_message_text(text="`Fetching season details...`", parse_mode=ParseMode.MARKDOWN_V2)
     season_soup = get_soup(season_url)
@@ -270,48 +260,14 @@ async def handle_season_selection(query, season_url, context):
         imdb_button = season_soup.select_one('a#imdb-button')
         if imdb_button and imdb_button.has_attr('href'):
             imdb_id = extract_imdb_id(imdb_button['href'])
-            if imdb_id and imdb_id in db:
+            if imdb_id:
                 await send_detailed_view(query.message, imdb_id)
             else:
-                logger.info(f"Season not in DB, scraping on the fly: {season_url}")
-                details = scrape_detail_page(season_url)
-                if details:
-                    await send_detailed_view_from_data(query.message, details)
-                else:
-                    await query.edit_message_text(text="Could not find details for this season.")
+                await query.edit_message_text(text="Could not find details for this season.")
         else:
             await query.edit_message_text(text="Could not find IMDb button for this season.")
     else:
         await query.edit_message_text(text="Could not fetch season page.")
-
-async def send_detailed_view_from_data(message, entry):
-    """A version of send_detailed_view that takes data directly, for on-the-fly scraping."""
-    title = escape_markdown_v2(entry.get('title', 'N/A'))
-    poster = entry.get('posterMalayalam')
-    imdb_url = entry.get('imdbURL')
-    caption = f"*{title}*\n\n[IMDb]({imdb_url})"
-
-    imdb_id = extract_imdb_id(imdb_url)
-    callback_data = f"download:{imdb_id}"
-    keyboard = [[InlineKeyboardButton("Download Subtitle", callback_data=callback_data)]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    await message.delete()
-    if poster:
-        await bot.send_photo(
-            chat_id=message.chat.id,
-            photo=poster,
-            caption=caption,
-            parse_mode=ParseMode.MARKDOWN_V2,
-            reply_markup=reply_markup
-        )
-    else:
-        await bot.send_message(
-            chat_id=message.chat.id,
-            text=caption,
-            parse_mode=ParseMode.MARKDOWN_V2,
-            reply_markup=reply_markup
-        )
 
 # --- Flask API Routes ---
 @app.route('/')
@@ -321,17 +277,24 @@ def index():
 
 @app.route('/api/<imdb_id>')
 def get_movie_by_id(imdb_id):
-    """Serves subtitle data for a given IMDb ID."""
     movie_data = db.get(imdb_id)
     if movie_data:
         return jsonify(movie_data)
     return jsonify({"error": "Movie not found"}), 404
 
 @app.route('/telegram', methods=['POST'])
-async def webhook():
-    """Webhook endpoint for the Telegram bot."""
-    update = Update.de_json(request.get_json(force=True), bot)
-    await application.process_update(update)
+def webhook():
+    """Webhook endpoint for the Telegram bot.
+    This function is synchronous to be compatible with Gunicorn's default workers.
+    """
+    logger.info("Webhook received")
+    update_data = request.get_json(force=True)
+    update = Update.de_json(update_data, bot)
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(application.process_update(update))
+
     return 'ok'
 
 @app.route('/set_webhook', methods=['GET'])
@@ -366,5 +329,4 @@ application.add_handler(CallbackQueryHandler(button))
 
 if __name__ == '__main__':
     logger.info("Starting Flask app for local development...")
-    # Note: This app.run is for local dev only. Gunicorn runs the app in production.
     app.run(debug=True, port=5000)
