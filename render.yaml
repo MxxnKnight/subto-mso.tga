@@ -10,7 +10,7 @@ services:
       echo "Starting scraper to build database..."
       python scraper.py
       echo "Scraper finished."
-    startCommand: "gunicorn app:app"
+    startCommand: "gunicorn app:app -k uvicorn.workers.UvicornWorker"
     envVars:
       - key: TELEGRAM_BOT_TOKEN
         value: "" # User must set this in the Render dashboard

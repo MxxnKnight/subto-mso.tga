@@ -29,17 +29,8 @@ if not TOKEN:
 bot = telegram.Bot(token=TOKEN)
 app = Flask(__name__)
 
-# --- Load Database ---
-try:
-    with open('db.json', 'r', encoding='utf-8') as f:
-        db = json.load(f)
-    logger.info("Successfully loaded db.json.")
-except FileNotFoundError:
-    db = {}
-    logger.warning("db.json not found. The bot will not have data to search.")
-except json.JSONDecodeError:
-    db = {}
-    logger.error("Could not decode db.json. File might be corrupt.")
+# --- Application Object ---
+application = Application.builder().token(TOKEN).build()
 
 # --- Menu Content & Helpers ---
 HOME_TEXT = "Welcome! Send me a movie or series name to search for subtitles."
@@ -283,22 +274,14 @@ def get_movie_by_id(imdb_id):
     return jsonify({"error": "Movie not found"}), 404
 
 @app.route('/telegram', methods=['POST'])
-def webhook():
-    """Webhook endpoint for the Telegram bot.
-    This function is synchronous to be compatible with Gunicorn's default workers.
-    """
-    logger.info("Webhook received")
-    update_data = request.get_json(force=True)
-    update = Update.de_json(update_data, bot)
-
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(application.process_update(update))
-
+async def webhook():
+    """Webhook endpoint for the Telegram bot."""
+    update = Update.de_json(request.get_json(force=True), application.bot)
+    await application.process_update(update)
     return 'ok'
 
 @app.route('/set_webhook', methods=['GET'])
-def set_webhook():
+async def set_webhook():
     """A route to manually set the webhook."""
     if TOKEN == "dummy_token":
         return "Cannot set webhook with a dummy token.", 400
@@ -310,9 +293,7 @@ def set_webhook():
 
     webhook_url = f'{webhook_base_url}/telegram'
 
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    success = loop.run_until_complete(bot.set_webhook(webhook_url))
+    success = await bot.set_webhook(webhook_url)
 
     if success:
         logger.info(f"Webhook set successfully to {webhook_url}")
@@ -322,11 +303,20 @@ def set_webhook():
         return "Webhook setup failed!", 500
 
 # --- Application Setup ---
-application = Application.builder().token(TOKEN).build()
 application.add_handler(CommandHandler("start", start))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search))
 application.add_handler(CallbackQueryHandler(button))
 
+# --- Gunicorn hooks ---
+@app.before_request
+async def before_request():
+    await application.initialize()
+
+@app.after_request
+async def after_request(response):
+    await application.shutdown()
+    return response
+
 if __name__ == '__main__':
     logger.info("Starting Flask app for local development...")
-    app.run(debug=True, port=5000)
+    application.run_polling()
