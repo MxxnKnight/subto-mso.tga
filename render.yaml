@@ -9,7 +9,7 @@ services:
       echo "Starting scraper to build database..."
       python scraper.py
       echo "Scraper finished."
-    startCommand: "gunicorn -w 4 -k uvicorn.workers.UvicornWorker app:app"
+    startCommand: "startCommand: gunicorn app:app -k uvicorn.workers.UvicornWorker -w 1"
     healthCheckPath: /healthz
     envVars:
       - key: TELEGRAM_BOT_TOKEN
