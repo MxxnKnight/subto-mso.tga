@@ -7,7 +7,6 @@ from typing import Dict, Any
 
 from fastapi import FastAPI, Request, Response, HTTPException, Query
 from telegram import Update
-from contextlib import asynccontextmanager
 
 # --- Logging Setup ---
 logging.basicConfig(
@@ -19,7 +18,7 @@ logger = logging.getLogger(__name__)
 # --- Environment Variables ---
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
-    raise RuntimeError("Missing TELEGRAM_BOT_TOKEN environment variable")
+    logger.warning("TELEGRAM_BOT_TOKEN not found - bot features will be disabled")
 
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "a-random-string")
 OWNER_ID = os.environ.get("OWNER_ID")
@@ -30,25 +29,19 @@ db: Dict[str, Any] = {}
 ptb_app = None
 
 # --- Database Functions ---
-async def load_database(max_retries: int = 3, retry_delay: int = 5) -> Dict[str, Any]:
-    """Load database with retry mechanism."""
-    for attempt in range(max_retries):
-        try:
-            with open(DB_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                logger.info(f"Successfully loaded {DB_FILE} with {len(data)} entries (attempt {attempt + 1})")
-                return data
-        except FileNotFoundError:
-            logger.warning(f"Database file {DB_FILE} not found (attempt {attempt + 1})")
-            if attempt < max_retries - 1:
-                logger.info(f"Retrying in {retry_delay} seconds...")
-                await asyncio.sleep(retry_delay)
-        except json.JSONDecodeError as e:
-            logger.error(f"Invalid JSON in {DB_FILE}: {e}")
-            break
-        except Exception as e:
-            logger.error(f"Unexpected error loading database: {e}")
-            break
+def load_database() -> Dict[str, Any]:
+    """Load database from file."""
+    try:
+        with open(DB_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            logger.info(f"Successfully loaded {DB_FILE} with {len(data)} entries")
+            return data
+    except FileNotFoundError:
+        logger.warning(f"Database file {DB_FILE} not found")
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid JSON in {DB_FILE}: {e}")
+    except Exception as e:
+        logger.error(f"Unexpected error loading database: {e}")
     
     logger.warning("Using empty database")
     return {}
@@ -60,7 +53,7 @@ def search_subtitles(query: str) -> list:
         return []
     
     # Sanitize query
-    cleaned_query = query.lower().replace('.', ' ').strip()[:100]  # Limit query length
+    cleaned_query = query.lower().replace('.', ' ').strip()[:100]
     
     results = [
         (imdb_id, entry) for imdb_id, entry in db.items()
@@ -68,86 +61,76 @@ def search_subtitles(query: str) -> list:
     ]
     return results
 
-# --- Lifecycle Management ---
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Manage application lifecycle."""
+# --- FastAPI App ---
+app = FastAPI(
+    title="Subtitle Search Bot API",
+    description="Telegram bot and API for searching Malayalam subtitles",
+    version="1.0.0"
+)
+
+# --- Initialize on startup ---
+@app.on_event("startup")
+async def startup_event():
+    """Initialize application on startup."""
     global db, ptb_app
     
-    # Startup
     logger.info("Starting application...")
     
     # Load database
-    db = await load_database()
+    db = load_database()
     
-    # Initialize bot
-    from bot import create_ptb_application
-    ptb_app = create_ptb_application(TOKEN)
-    ptb_app.bot_data["db"] = db
-    
-    try:
-        await ptb_app.initialize()
+    # Initialize bot if token is available
+    if TOKEN:
+        try:
+            from bot import create_ptb_application
+            ptb_app = create_ptb_application(TOKEN)
+            ptb_app.bot_data["db"] = db
+            
+            await ptb_app.initialize()
+            
+            # Set webhook
+            base_url = os.environ.get("RENDER_EXTERNAL_URL", "https://subto-mso-tga.onrender.com")
+            webhook_url = f"{base_url}/webhook"
+            
+            await ptb_app.bot.set_webhook(
+                url=webhook_url,
+                secret_token=WEBHOOK_SECRET,
+                drop_pending_updates=True,
+                max_connections=10
+            )
+            logger.info(f"Webhook set to {webhook_url}")
+            
+            # Notify owner
+            if OWNER_ID:
+                try:
+                    await ptb_app.bot.send_message(
+                        chat_id=OWNER_ID, 
+                        text="Bot is up and running!"
+                    )
+                    logger.info(f"Sent startup notification to owner {OWNER_ID}")
+                except Exception as e:
+                    logger.error(f"Failed to send startup notification: {e}")
         
-        # Set webhook
-        base_url = os.environ.get("RENDER_EXTERNAL_URL", "https://subto-mso-tga.onrender.com")
-        webhook_url = f"{base_url}/webhook"
-        
-        await ptb_app.bot.set_webhook(
-            url=webhook_url,
-            secret_token=WEBHOOK_SECRET,
-            drop_pending_updates=True,
-            max_connections=10
-        )
-        logger.info(f"Webhook set to {webhook_url}")
-        
-        # Notify owner
-        if OWNER_ID:
-            try:
-                await ptb_app.bot.send_message(
-                    chat_id=OWNER_ID, 
-                    text="🟢 Bot is up and running!\n\nDatabase loaded successfully."
-                )
-                logger.info(f"Sent startup notification to owner {OWNER_ID}")
-            except Exception as e:
-                logger.error(f"Failed to send startup notification: {e}")
-    
-    except Exception as e:
-        logger.error(f"Failed to initialize bot: {e}")
-        raise
-    
-    yield
-    
-    # Shutdown
+        except Exception as e:
+            logger.error(f"Failed to initialize bot: {e}")
+    else:
+        logger.info("Bot not initialized - TOKEN missing")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Clean shutdown."""
     logger.info("Shutting down application...")
     if ptb_app:
         try:
             if OWNER_ID:
                 await ptb_app.bot.send_message(
                     chat_id=OWNER_ID, 
-                    text="🔴 Bot is shutting down..."
+                    text="Bot is shutting down..."
                 )
         except Exception as e:
             logger.error(f"Failed to send shutdown notification: {e}")
         
         await ptb_app.shutdown()
-
-# --- FastAPI App ---
-app = FastAPI(
-    title="Subtitle Search Bot API",
-    description="Telegram bot and API for searching Malayalam subtitles",
-    version="1.0.0",
-    lifespan=lifespan
-)
-
-# --- Middleware ---
-@app.middleware("http")
-async def security_headers(request: Request, call_next):
-    """Add security headers."""
-    response = await call_next(request)
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
-    response.headers["X-XSS-Protection"] = "1; mode=block"
-    return response
 
 # --- API Endpoints ---
 @app.get("/")
@@ -202,6 +185,10 @@ async def api_search(
 @app.post("/webhook")
 async def webhook(request: Request):
     """Telegram webhook endpoint."""
+    if not ptb_app:
+        logger.warning("Bot not initialized - webhook ignored")
+        return Response(status_code=HTTPStatus.SERVICE_UNAVAILABLE)
+        
     # Verify secret token
     secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
     if WEBHOOK_SECRET and secret != WEBHOOK_SECRET:
@@ -221,14 +208,3 @@ async def webhook(request: Request):
     except Exception as e:
         logger.error(f"Webhook processing error: {e}")
         raise HTTPException(status_code=HTTPStatus.INTERNAL_SERVER_ERROR, detail="Processing error")
-
-# --- Debug Endpoints (only in development) ---
-if os.environ.get("ENVIRONMENT") == "development":
-    @app.get("/debug/db-info")
-    async def debug_db_info():
-        """Debug endpoint to check database status."""
-        return {
-            "database_loaded": len(db) > 0,
-            "total_entries": len(db),
-            "sample_keys": list(db.keys())[:5] if db else []
-        }
