@@ -1,6 +1,15 @@
-requests
-beautifulsoup4
-python-telegram-bot
-gunicorn
-uvicorn
-fastapi
+# Web Framework & Server
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+gunicorn==21.2.0
+
+# Telegram Bot
+python-telegram-bot==20.7
+
+# Web Scraping
+requests==2.31.0
+beautifulsoup4==4.12.2
+lxml==4.9.3
+
+# Additional dependencies for stability
+aiofiles==23.2.1
