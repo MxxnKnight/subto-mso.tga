@@ -3,16 +3,11 @@ import json
 import logging
 from http import HTTPStatus
 
-from fastapi import Request, Response
+from fastapi import FastAPI, Request, Response
 from telegram import Update
 
-# Import the FastAPI app from api.py
-from api import app, db
-
-# Import the bot application factory from bot.py
-from bot import create_ptb_application
-
 # --- Logging Setup ---
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # --- Environment ---
@@ -23,37 +18,48 @@ if not TOKEN:
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "a-random-string")
 OWNER_ID = os.environ.get("OWNER_ID")
 
+# --- FastAPI app ---
+app = FastAPI()
+
 # --- Bot Setup ---
-# Create the PTB application instance
+from bot import create_ptb_application
+from api import db  # only import db, not app
+
 ptb_app = create_ptb_application(TOKEN)
-# Store the database in the bot's context for handlers to access
 ptb_app.bot_data["db"] = db
 
 
 # --- FastAPI Lifecycle Events ---
 @app.on_event("startup")
 async def on_startup():
-    """Application startup logic: initialize bot and set webhook."""
+    """Initialize bot and set webhook."""
     await ptb_app.initialize()
 
-    base_url = os.environ.get("RENDER_EXTERNAL_URL")
-    if not base_url:
-        logger.error("RENDER_EXTERNAL_URL not set; can't set webhook automatically.")
-        return
-
+    base_url = os.environ.get("RENDER_EXTERNAL_URL", "https://subto-mso-tga.onrender.com")
     url = f"{base_url}/webhook"
-    await ptb_app.bot.set_webhook(url=url, secret_token=WEBHOOK_SECRET, drop_pending_updates=True)
+    await ptb_app.bot.set_webhook(
+        url=url,
+        secret_token=WEBHOOK_SECRET,
+        drop_pending_updates=True
+    )
     logger.info(f"Webhook set to {url}")
 
     if OWNER_ID:
         await ptb_app.bot.send_message(chat_id=OWNER_ID, text="Bot is up and running!")
         logger.info(f"Sent startup notification to OWNER_ID {OWNER_ID}")
 
+
 @app.on_event("shutdown")
 async def on_shutdown():
-    """Application shutdown logic."""
+    """Clean shutdown."""
     logger.info("Application shutting down...")
     await ptb_app.shutdown()
+
+
+# --- Healthcheck Endpoint ---
+@app.get("/")
+async def healthcheck():
+    return {"status": "ok", "message": "Bot service is running"}
 
 
 # --- Webhook Endpoint ---
