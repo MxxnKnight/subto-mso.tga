@@ -9,7 +9,7 @@ services:
       echo "Starting scraper to build database..."
       python scraper.py || echo "Scraper failed, using existing db.json if available"
       echo "Build complete."
-    startCommand: gunicorn app:app -k uvicorn.workers.UvicornWorker -w 1 --timeout 120 --keep-alive 2
+    startCommand: "gunicorn app:app -k uvicorn.workers.UvicornWorker -w 1 --timeout 120 --keep-alive 2"
     healthCheckPath: /healthz
     autoDeploy: false
     envVars:
