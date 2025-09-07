@@ -1,24 +1,47 @@
-# MSone മലയാളം subtitles API (unofficial)
+# Subtitle Search Telegram Bot (subto-mso-tga)
 
-> After November 28th, 2022, Heroku is terminating is free plans, Live API wont function after that.
+This is a Telegram bot that allows users to search for Malayalam subtitles for movies and series from [malayalamsubtitles.org](https://malayalamsubtitles.org).
 
-Base URL: `https://malayalam-subtitles.herokuapp.com/<imdb-id>`
+The project is built using Python with the following key technologies:
+- **FastAPI**: For the asynchronous web server that handles API requests and the Telegram webhook.
+- **Uvicorn/Gunicorn**: As the production web server.
+- **python-telegram-bot**: The library used to interact with the Telegram Bot API.
+- **BeautifulSoup4/requests**: For scraping the subtitle data.
 
-example: `GET` https://malayalam-subtitles.herokuapp.com/tt6723592
+## Features
 
-result:
+- Search for subtitles by movie or series name.
+- Displays results with posters, descriptions, and direct download links.
+- A REST API endpoint (`/api/subtitles?query=...`) for programmatic searching.
+- Health check endpoint (`/healthz`) for monitoring.
+- Startup notification sent to the bot owner.
 
-```json
-{
-    "title": "Tenet / ടെനെറ്റ് (2020)",
-    "posterMalayalam": "https://malayalamsubtitles.org/wp-content/uploads/2020/12/TENET-POSTER-725x1024.jpg",
-    "descriptionMalayalam": "ടൈം-ട്രാവലിന്റെ തന്നെ മറ്റൊരു വേർഷനായ ടൈം റിവേഴ്സ് പ്രമേയമാക്കി ക്രിസ്റ്റഫർ നോളന്റെ സംവിധാനത്തിൽ ഇറങ്ങിയ ഏറ്റവും പുതിയ ആക്ഷൻ/സൈ-ഫൈ ചിത്രം.പേര് പറയാത്ത, ‘നായകൻ’ എന്ന് മാത്രം വിളിക്കപ്പെടുന്ന മുഖ്യകഥാപാത്രം ഉക്രെയിനിലെ ഒരു ഓപ്പറ ഹൗസിലെ അണ്ടർ കവർ ഓപ്പറേഷനിൽ പങ്കെടുക്കുന്നു. അവിടെ വച്ച് ശത്രുക്കളുടെ പിടിയിലാകുന്ന നായകൻ പീഡനങ്ങൾക്ക് ഇരയാകുന്നു.താൻ ഒരു പരീക്ഷണത്തിന് വിധേയനാകുകയായിരുന്നു എന്ന് തിരിച്ചറിയുന്ന നായകൻ പിന്നീട് എത്തിപ്പെടുന്നത് ‘ടെനെറ്റ്’ എന്ന സംഘത്തിലാണ്. അവിടെ വെച്ച് ലോകത്തെ നശിപ്പിക്കാൻ കെല്പുള്ള ‘ഇൻവേർട്ടഡ് ആയുധ’ങ്ങളെപ്പറ്റി നായകൻ മനസ്സിലാക്കുന്നു. ആരാണ് ആ ആയുധങ്ങളുടെ പിന്നിൽ? എങ്ങിനെയാണ് ആയുധങ്ങൾ ഇൻവേർട്ട് ചെയ്യുന്നത്? ഇതെല്ലാം കണ്ടെത്തുന്നതിനൊപ്പം, ലോകം നേരിടുന്ന ദുരന്തം തടയേണ്ട ചുമതലയും നായകനാണ്.നോളന്റെ പതിവ് ശൈലിയിലുള്ള ചിത്രം ആക്ഷൻ രംഗങ്ങളിലും, ഗ്രാഫിക്സിലും ഏറെ മികവ് പുലർത്തുന്നു.",
-    "imdbURL": "https://www.imdb.com/title/tt6723592/",
-    "srtURL": "https://malayalamsubtitles.org/download/tenet-%e0%b4%9f%e0%b5%86%e0%b4%a8%e0%b5%86%e0%b4%b1%e0%b5%8d%e0%b4%b1%e0%b5%8d-2020/?wpdmdl=21763&refresh=5fe82b98d24c41609051032",
-    "translatedBy": {
-        "name": "പ്രശോഭ് പി.സി",
-        "url": "https://www.facebook.com/prashobh.nair.1"
-    }
-}
+## Deployment on Render
 
-```
+This bot is designed to be deployed on the Render free tier.
+
+### 1. Fork the Repository
+
+Fork this repository to your own GitHub account.
+
+### 2. Create a New Web Service on Render
+
+- Connect your GitHub account to Render.
+- Create a new "Web Service" and select your forked repository.
+- Render will automatically detect the `render.yaml` file and use it for configuration.
+
+### 3. Set Environment Variables
+
+In the Render dashboard for your service, go to the "Environment" tab and add the following secrets:
+
+- **`TELEGRAM_BOT_TOKEN`**: Your bot token obtained from BotFather on Telegram.
+- **`OWNER_ID`**: (Optional) Your personal Telegram User ID. If you provide this, the bot will send you a "Bot is up and running!" message every time it deploys.
+- **`WEBHOOK_SECRET`**: (Optional but Recommended) Render will automatically generate a secure, random string for this if you use the `render.yaml` provided. It's used to verify that incoming requests to your webhook are genuinely from Telegram.
+
+### How it Works
+
+- The `render.yaml` file configures the entire deployment.
+- The `buildCommand` first installs dependencies and then runs `scraper.py` to build the `db.json` subtitle database. This happens every time you deploy, so the data stays fresh.
+- The `startCommand` runs the FastAPI application using Gunicorn and Uvicorn workers.
+- On startup, the application automatically sets its own Telegram webhook using the `RENDER_EXTERNAL_URL` provided by Render. This makes the setup process seamless.
+- The free web service will "spin down" after 15 minutes of inactivity, but it will wake up automatically when it receives a new message (a webhook call from Telegram). The first response after a cold start may take a few seconds.
