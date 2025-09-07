@@ -5,7 +5,6 @@ from http import HTTPStatus
 from typing import Dict, Any
 
 from fastapi import FastAPI, Request, Response, HTTPException, Query
-from telegram import Update
 
 # --- Logging Setup ---
 logging.basicConfig(
@@ -16,16 +15,12 @@ logger = logging.getLogger(__name__)
 
 # --- Environment Variables ---
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-if not TOKEN:
-    logger.warning("TELEGRAM_BOT_TOKEN not found - bot features will be disabled")
-
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "a-random-string")
 OWNER_ID = os.environ.get("OWNER_ID")
 DB_FILE = os.environ.get("DB_FILE", "db.json")
 
 # --- Global Variables ---
 db: Dict[str, Any] = {}
-ptb_app = None
 
 # --- Database Functions ---
 def load_database() -> Dict[str, Any]:
@@ -59,6 +54,98 @@ def search_subtitles(query: str) -> list:
     ]
     return results
 
+# --- Manual Bot Response Handler ---
+async def handle_telegram_message(message_data: dict) -> dict:
+    """Handle Telegram messages manually without ptb library issues."""
+    try:
+        message = message_data.get('message', {})
+        text = message.get('text', '').strip()
+        chat_id = message.get('chat', {}).get('id')
+        user = message.get('from', {})
+        
+        if not chat_id or not text:
+            return None
+        
+        logger.info(f"Received message: '{text}' from user {user.get('username', 'unknown')}")
+        
+        # Handle commands
+        if text.startswith('/start'):
+            response_text = (
+                "🎬 *Welcome to Malayalam Subtitle Search Bot!*\n\n"
+                "Send me a movie or TV show name to search for Malayalam subtitles.\n\n"
+                "*Example:* Just type 'Dune' or 'Breaking Bad'\n\n"
+                "_Powered by malayalamsubtitles.org_"
+            )
+        elif text.startswith('/help'):
+            response_text = (
+                "*How to use:*\n\n"
+                "1️⃣ Send me any movie or TV show name\n"
+                "2️⃣ I'll search for Malayalam subtitles\n"
+                "3️⃣ Click download links to get subtitle files\n\n"
+                "*Commands:*\n"
+                "• /start - Welcome message\n"
+                "• /help - This help\n"
+                "• /stats - Statistics"
+            )
+        elif text.startswith('/stats'):
+            response_text = f"📊 *Bot Statistics:*\n\n🎬 Movies/Shows: {len(db)}\n🤖 Status: Online"
+        else:
+            # Search query
+            if len(text) < 2:
+                response_text = "Please send a movie name with at least 2 characters."
+            elif len(text) > 100:
+                response_text = "Movie name too long. Please use a shorter search term."
+            else:
+                results = search_subtitles(text)
+                if not results:
+                    response_text = f'No subtitles found for "{text}"\n\nTry different keywords or check spelling.'
+                else:
+                    # Format first result
+                    imdb_id, entry = results[0]
+                    title = entry.get('title', 'Unknown')
+                    imdb_url = entry.get('imdbURL', '')
+                    download_url = entry.get('srtURL', '')
+                    
+                    response_text = f"🎬 *{title}*\n\n"
+                    if imdb_url:
+                        response_text += f"📝 [IMDb]({imdb_url})\n"
+                    if download_url:
+                        response_text += f"📥 [Download Subtitle]({download_url})\n"
+                    response_text += f"\n🆔 `{imdb_id}`"
+                    
+                    if len(results) > 1:
+                        response_text += f"\n\n_Found {len(results)} total results. Showing first result._"
+        
+        return {
+            'chat_id': chat_id,
+            'text': response_text,
+            'parse_mode': 'Markdown',
+            'disable_web_page_preview': True
+        }
+        
+    except Exception as e:
+        logger.error(f"Error handling message: {e}")
+        return None
+
+async def send_telegram_message(response_data: dict):
+    """Send message back to Telegram using Bot API."""
+    if not TOKEN or not response_data:
+        return
+    
+    import aiohttp
+    
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=response_data) as resp:
+                if resp.status == 200:
+                    logger.info("Message sent successfully")
+                else:
+                    logger.error(f"Failed to send message: {resp.status}")
+    except Exception as e:
+        logger.error(f"Error sending message: {e}")
+
 # --- FastAPI App ---
 app = FastAPI(
     title="Subtitle Search Bot API",
@@ -66,68 +153,47 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# --- Initialize on startup ---
 @app.on_event("startup")
 async def startup_event():
     """Initialize application on startup."""
-    global db, ptb_app
+    global db
     
     logger.info("Starting application...")
-    
-    # Load database
     db = load_database()
     
-    # Initialize bot if token is available
+    # Set webhook if token is available
     if TOKEN:
+        import aiohttp
+        
         try:
-            from telegram.ext import Application
-            
-            # Create application with simpler configuration
-            ptb_app = Application.builder().token(TOKEN).build()
-            ptb_app.bot_data["db"] = db
-            
-            await ptb_app.initialize()
-            
-            # Set webhook to /telegram endpoint (what Telegram is using)
             base_url = os.environ.get("RENDER_EXTERNAL_URL", "https://subto-mso-tga.onrender.com")
             webhook_url = f"{base_url}/telegram"
             
-            await ptb_app.bot.set_webhook(
-                url=webhook_url,
-                secret_token=WEBHOOK_SECRET,
-                drop_pending_updates=True
-            )
-            logger.info(f"Webhook set to {webhook_url}")
+            url = f"https://api.telegram.org/bot{TOKEN}/setWebhook"
+            data = {
+                "url": webhook_url,
+                "secret_token": WEBHOOK_SECRET,
+                "drop_pending_updates": True
+            }
             
-            # Add handlers
-            from bot import create_handlers
-            create_handlers(ptb_app)
-            
-            # Notify owner
-            if OWNER_ID:
-                try:
-                    await ptb_app.bot.send_message(
-                        chat_id=OWNER_ID, 
-                        text="Bot is up and running!"
-                    )
-                    logger.info(f"Sent startup notification to owner {OWNER_ID}")
-                except Exception as e:
-                    logger.error(f"Failed to send startup notification: {e}")
-        
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=data) as resp:
+                    if resp.status == 200:
+                        logger.info(f"Webhook set to {webhook_url}")
+                        
+                        # Notify owner
+                        if OWNER_ID:
+                            await send_telegram_message({
+                                'chat_id': OWNER_ID,
+                                'text': 'Bot is up and running!',
+                                'parse_mode': 'Markdown'
+                            })
+                    else:
+                        logger.error(f"Failed to set webhook: {resp.status}")
         except Exception as e:
-            logger.error(f"Failed to initialize bot: {e}")
+            logger.error(f"Error setting webhook: {e}")
     else:
-        logger.info("Bot not initialized - TOKEN missing")
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Clean shutdown."""
-    logger.info("Shutting down application...")
-    if ptb_app:
-        try:
-            await ptb_app.shutdown()
-        except Exception as e:
-            logger.error(f"Shutdown error: {e}")
+        logger.info("No bot token - webhook not set")
 
 # --- API Endpoints ---
 @app.get("/")
@@ -180,9 +246,9 @@ async def api_search(
 
 @app.post("/telegram")
 async def telegram_webhook(request: Request):
-    """Telegram webhook endpoint - matches what Telegram is posting to."""
-    if not ptb_app:
-        logger.warning("Bot not initialized - webhook ignored")
+    """Telegram webhook endpoint."""
+    if not TOKEN:
+        logger.warning("No bot token - webhook ignored")
         return Response(status_code=HTTPStatus.SERVICE_UNAVAILABLE)
         
     # Verify secret token
@@ -193,8 +259,13 @@ async def telegram_webhook(request: Request):
     
     try:
         data = await request.json()
-        update = Update.de_json(data, ptb_app.bot)
-        await ptb_app.process_update(update)
+        logger.info(f"Received webhook data: {json.dumps(data, indent=2)}")
+        
+        # Handle the message
+        response_data = await handle_telegram_message(data)
+        if response_data:
+            await send_telegram_message(response_data)
+        
         return Response(status_code=HTTPStatus.OK)
         
     except json.JSONDecodeError:
@@ -204,9 +275,3 @@ async def telegram_webhook(request: Request):
     except Exception as e:
         logger.error(f"Webhook processing error: {e}")
         raise HTTPException(status_code=HTTPStatus.INTERNAL_SERVER_ERROR, detail="Processing error")
-
-# Keep the old webhook endpoint as backup
-@app.post("/webhook")
-async def webhook_backup(request: Request):
-    """Backup webhook endpoint."""
-    return await telegram_webhook(request)
