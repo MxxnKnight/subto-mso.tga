@@ -1,7 +1,6 @@
 import os
 import json
 import logging
-import asyncio
 from http import HTTPStatus
 from typing import Dict, Any
 
@@ -52,7 +51,6 @@ def search_subtitles(query: str) -> list:
     if not db or not query:
         return []
     
-    # Sanitize query
     cleaned_query = query.lower().replace('.', ' ').strip()[:100]
     
     results = [
@@ -82,23 +80,28 @@ async def startup_event():
     # Initialize bot if token is available
     if TOKEN:
         try:
-            from bot import create_ptb_application
-            ptb_app = create_ptb_application(TOKEN)
+            from telegram.ext import Application
+            
+            # Create application with simpler configuration
+            ptb_app = Application.builder().token(TOKEN).build()
             ptb_app.bot_data["db"] = db
             
             await ptb_app.initialize()
             
-            # Set webhook
+            # Set webhook to /telegram endpoint (what Telegram is using)
             base_url = os.environ.get("RENDER_EXTERNAL_URL", "https://subto-mso-tga.onrender.com")
-            webhook_url = f"{base_url}/webhook"
+            webhook_url = f"{base_url}/telegram"
             
             await ptb_app.bot.set_webhook(
                 url=webhook_url,
                 secret_token=WEBHOOK_SECRET,
-                drop_pending_updates=True,
-                max_connections=10
+                drop_pending_updates=True
             )
             logger.info(f"Webhook set to {webhook_url}")
+            
+            # Add handlers
+            from bot import create_handlers
+            create_handlers(ptb_app)
             
             # Notify owner
             if OWNER_ID:
@@ -122,15 +125,9 @@ async def shutdown_event():
     logger.info("Shutting down application...")
     if ptb_app:
         try:
-            if OWNER_ID:
-                await ptb_app.bot.send_message(
-                    chat_id=OWNER_ID, 
-                    text="Bot is shutting down..."
-                )
+            await ptb_app.shutdown()
         except Exception as e:
-            logger.error(f"Failed to send shutdown notification: {e}")
-        
-        await ptb_app.shutdown()
+            logger.error(f"Shutdown error: {e}")
 
 # --- API Endpoints ---
 @app.get("/")
@@ -164,7 +161,6 @@ async def api_search(
                 "message": "No results found"
             }
         
-        # Limit results and format response
         limited_results = results[:limit]
         formatted_results = [
             {**entry, "imdb_id": imdb_id} 
@@ -182,9 +178,9 @@ async def api_search(
         logger.error(f"API search error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-@app.post("/webhook")
-async def webhook(request: Request):
-    """Telegram webhook endpoint."""
+@app.post("/telegram")
+async def telegram_webhook(request: Request):
+    """Telegram webhook endpoint - matches what Telegram is posting to."""
     if not ptb_app:
         logger.warning("Bot not initialized - webhook ignored")
         return Response(status_code=HTTPStatus.SERVICE_UNAVAILABLE)
@@ -208,3 +204,9 @@ async def webhook(request: Request):
     except Exception as e:
         logger.error(f"Webhook processing error: {e}")
         raise HTTPException(status_code=HTTPStatus.INTERNAL_SERVER_ERROR, detail="Processing error")
+
+# Keep the old webhook endpoint as backup
+@app.post("/webhook")
+async def webhook_backup(request: Request):
+    """Backup webhook endpoint."""
+    return await telegram_webhook(request)
