@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 # --- Rate Limiting ---
 user_last_request: Dict[int, datetime] = defaultdict(lambda: datetime.min)
-RATE_LIMIT_SECONDS = 2  # Minimum seconds between requests per user
+RATE_LIMIT_SECONDS = 2
 
 def is_rate_limited(user_id: int) -> bool:
     """Check if user is rate limited."""
@@ -32,7 +32,6 @@ def search_subtitles_in_db(query: str, db: Dict[str, Any]) -> list:
     if not db or not query:
         return []
     
-    # Sanitize and normalize query
     cleaned_query = query.lower().replace('.', ' ').replace('-', ' ').strip()
     query_words = cleaned_query.split()
     
@@ -40,7 +39,7 @@ def search_subtitles_in_db(query: str, db: Dict[str, Any]) -> list:
     for imdb_id, entry in db.items():
         title = entry.get('title', '').lower().replace('.', ' ').replace('-', ' ').strip()
         
-        # Check if all query words are in title (better matching)
+        # Check if all query words are in title
         if all(word in title for word in query_words):
             results.append((imdb_id, entry))
         # Fallback to original matching
@@ -239,15 +238,19 @@ async def handle_unknown_command(update: Update, context: ContextTypes.DEFAULT_T
         "❓ Unknown command. Send /help to see available commands or just send a movie name to search."
     )
 
-def create_ptb_application(token: str) -> Application:
-    """Create and configure the python-telegram-bot Application."""
-    application = Application.builder().token(token).build()
-    
-    # Add handlers
+def create_handlers(application: Application):
+    """Add handlers to the application."""
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("stats", stats_command))
     application.add_handler(MessageHandler(filters.COMMAND, handle_unknown_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_search))
     
+    logger.info("Bot handlers added successfully")
+
+# Keep the old function for compatibility
+def create_ptb_application(token: str) -> Application:
+    """Create and configure the python-telegram-bot Application."""
+    application = Application.builder().token(token).build()
+    create_handlers(application)
     return application
