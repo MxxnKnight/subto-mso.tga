@@ -369,6 +369,42 @@ def main():
         return False
     finally:
         SCRAPER_RUNNING = False
+    
+    import threading
+
+# Shared status dictionary
+scraper_status = {
+    "running": False,
+    "progress": "Idle"
+}
+
+_scraper_thread = None
+
+def scraper_task():
+    global scraper_status
+    try:
+        scraper_status["running"] = True
+        scraper_status["progress"] = "In progress..."
+        start_scraper()  # this calls your existing main()
+        scraper_status["progress"] = "Completed"
+    except Exception as e:
+        scraper_status["progress"] = f"Error: {e}"
+    finally:
+        scraper_status["running"] = False
+
+def start_scraper_background():
+    """Run scraper in a background thread"""
+    global _scraper_thread
+    if _scraper_thread and _scraper_thread.is_alive():
+        return  # already running
+    _scraper_thread = threading.Thread(target=scraper_task, daemon=True)
+    _scraper_thread.start()
+
+def stop_scraper_background():
+    """Request scraper to stop gracefully"""
+    scraper_status["progress"] = "Stopping..."
+    stop_scraper()  # your existing function
+   
 
 if __name__ == "__main__":
     success = start_scraper()
