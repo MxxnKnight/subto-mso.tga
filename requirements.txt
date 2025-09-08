@@ -6,7 +6,9 @@ uvicorn[standard]==0.24.0
 aiohttp==3.9.1
 
 # Async file operations
-aiofiles==0.24.1
+aiofiles==24.1.0  
+# Latest available version
+
 
 # Web Scraping
 requests==2.31.0
