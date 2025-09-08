@@ -2,9 +2,15 @@
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 
-# HTTP Client for Telegram API
+# HTTP Client for Telegram API and downloads
 aiohttp==3.9.1
+
+# Async file operations
+aiofiles==0.24.1
 
 # Web Scraping
 requests==2.31.0
 beautifulsoup4==4.12.2
+
+# File handling and compression
+zipfile-deflate64==0.2.0
