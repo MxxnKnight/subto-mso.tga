@@ -783,5 +783,21 @@ async def handle_telegram_message(message_data: dict) -> Dict:
                     'text': f"Broadcast feature coming soon!\n\nMessage to broadcast: {broadcast_text}",
                     'parse_mode': 'Markdown'
                 }
-            elif text == '/scrape' or text == '/scrape_start':
-                return {
+               elif text == '/scrape' or text == '/scrape_start':
+        return {
+            'chat_id': chat_id,
+            'text': "🛠 Scraper Control Panel",
+            'parse_mode': 'Markdown',
+            'reply_markup': {
+                'inline_keyboard': [
+                    [
+                        {'text': '▶️ Start Scraper', 'callback_data': 'scraper_start'},
+                        {'text': '⏹ Stop Scraper', 'callback_data': 'scraper_stop'}
+                    ],
+                    [
+                        {'text': 'ℹ️ Scraper Status', 'callback_data': 'scraper_status'}
+                    ]
+                ]
+            }
+        }
+
