@@ -773,27 +773,30 @@ async def handle_telegram_message(message_data: dict) -> Dict:
         
         logger.info(f"Message: '{text}' from {user.get('username', 'unknown')} ({user_id})")
 
-# Admin commands
-if str(user_id) == OWNER_ID:
-    if text.startswith('/broadcast '):
-        broadcast_text = text.replace('/broadcast ', '')
-        # TODO: Implement broadcast functionality
-        return {
-            'chat_id': chat_id,
-            'text': f"Broadcast feature coming soon!\n\nMessage to broadcast: {broadcast_text}",
-            'parse_mode': 'Markdown'
-        }
-    elif text == '/scrape' or text == '/scrape_start':
-        return {
-            'chat_id': chat_id,
-            'text': "🛠 Scraper Control Panel",
-            'parse_mode': 'Markdown',
-            'reply_markup': {
-                'inline_keyboard': [
-                    [{'text': '▶️ Start Scraper', 'callback_data': 'scraper_start'}],
-                    [{'text': '📊 Scraper Status', 'callback_data': 'scraper_status'}],
-                    [{'text': '❌ Close', 'callback_data': 'menu_close'}]
-                ]
-            }
-        }
+        # ✅ Admin commands go inside this function
+        if str(user_id) == OWNER_ID:
+            if text.startswith('/broadcast '):
+                broadcast_text = text.replace('/broadcast ', '')
+                # TODO: Implement broadcast functionality
+                return {
+                    'chat_id': chat_id,
+                    'text': f"Broadcast feature coming soon!\n\nMessage to broadcast: {broadcast_text}",
+                    'parse_mode': 'Markdown'
+                }
+            elif text == '/scrape' or text == '/scrape_start':
+                return {
+                    'chat_id': chat_id,
+                    'text': "🛠 Scraper Control Panel",
+                    'parse_mode': 'Markdown',
+                    'reply_markup': {
+                        'inline_keyboard': [
+                            [{'text': '▶️ Start Scraper', 'callback_data': 'scraper_start'}],
+                            [{'text': '📊 Scraper Status', 'callback_data': 'scraper_status'}],
+                            [{'text': '❌ Close', 'callback_data': 'menu_close'}]
+                        ]
+                    }
+                }
 
+    except Exception as e:
+        logger.error(f"Error handling telegram message: {e}")
+        return None
