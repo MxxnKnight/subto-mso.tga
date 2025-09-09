@@ -19,7 +19,7 @@ jobs:
       - name: Check out the correct branch
         uses: actions/checkout@v3
         with:
-          ref: 'jules-fix-bot'
+          ref: 'jules-bot-fix'
 
       - name: Set up Python
         uses: actions/setup-python@v4
