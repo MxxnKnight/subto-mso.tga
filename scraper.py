@@ -249,9 +249,18 @@ def main():
     
     logger.info("Starting enhanced Malayalam subtitle scraper...")
     
-    all_results = []
+    # --- Load existing database for incremental update ---
+    try:
+        with open('db.json', 'r', encoding='utf-8') as f:
+            final_db = json.load(f)
+        logger.info(f"Loaded {len(final_db)} entries from existing db.json")
+    except (FileNotFoundError, json.JSONDecodeError):
+        final_db = {}
+        logger.info("No existing db.json found or it's invalid. Starting fresh.")
+
     current_page_url = RELEASES_URL
     processed_count = 0
+    skipped_count = 0
 
     for page_num in range(1, MAX_PAGES + 1):
         if not SCRAPER_RUNNING:
@@ -273,6 +282,7 @@ def main():
             
         logger.info(f"Found {len(entries)} entries on page {page_num}")
         
+        new_on_this_page = 0
         for i, entry in enumerate(entries):
             if not SCRAPER_RUNNING:
                 logger.info("Scraper stopped - finishing current page")
@@ -288,10 +298,24 @@ def main():
                 if detail_url.startswith('/'):
                     detail_url = BASE_URL + detail_url
                 
+                # Pre-check if we already have this entry to save time
+                # Note: This is a simple check. A more robust check would be to get the IMDb ID from the link if possible.
+                # For now, we scrape then check.
+
                 post_details = scrape_detail_page(detail_url)
                 if post_details:
-                    all_results.append(post_details)
-                    processed_count += 1
+                    imdb_id = extract_imdb_id(post_details.get('imdbURL'))
+                    if imdb_id:
+                        if imdb_id not in final_db:
+                            final_db[imdb_id] = post_details
+                            processed_count += 1
+                            new_on_this_page += 1
+                            logger.info(f"New entry found: {post_details['title']} ({imdb_id})")
+                        else:
+                            logger.info(f"Skipping existing entry: {post_details['title']} ({imdb_id})")
+                    else:
+                        logger.warning(f"No IMDb ID for: {post_details.get('title')}, skipping.")
+                        skipped_count += 1
                 
                 # Respectful delay
                 time.sleep(1.5)
@@ -309,37 +333,21 @@ def main():
         # Delay between pages
         time.sleep(3)
 
-    logger.info(f"Scraped {len(all_results)} total entries")
+    logger.info(f"Scraping finished. Total entries in database: {len(final_db)}")
 
-    # Process series and create database
-    final_db = {}
-    series_db = {}  # Separate tracking for series
-    skipped = 0
-    
-    for result in all_results:
-        imdb_id = extract_imdb_id(result.get('imdbURL'))
-        if imdb_id:
-            if imdb_id not in final_db:
-                # Add to main database
-                final_db[imdb_id] = result
-                
-                # Track series separately
-                if result.get('is_series') and result.get('series_name'):
-                    series_name = result['series_name']
-                    if series_name not in series_db:
-                        series_db[series_name] = {}
-                    
-                    season_num = result.get('season_number', 1)
-                    series_db[series_name][season_num] = imdb_id
-                    
-                    # Update total seasons count
-                    result['total_seasons'] = len(series_db[series_name])
-                    final_db[imdb_id] = result  # Update with season count
-            else:
-                skipped += 1
-        else:
-            logger.warning(f"No IMDb ID for: {result.get('title')}")
-            skipped += 1
+    # Rebuild the series_db from the final, combined database
+    series_db = {}
+    for imdb_id, entry in final_db.items():
+        if entry.get('is_series') and entry.get('series_name'):
+            series_name = entry['series_name']
+            if series_name not in series_db:
+                series_db[series_name] = {}
+
+            season_num = entry.get('season_number', 1)
+            series_db[series_name][season_num] = imdb_id
+
+            # Update total seasons count
+            entry['total_seasons'] = len(series_db[series_name])
 
     # Write database
     try:
@@ -357,7 +365,7 @@ def main():
         
         logger.info(f"Successfully created db.json with {len(final_db)} entries")
         logger.info(f"Created series_db.json with {len(series_db)} series")
-        logger.info(f"Skipped {skipped} entries without IMDb IDs")
+        logger.info(f"Skipped {skipped_count} entries without IMDb IDs")
         
         # Verify file
         size = os.path.getsize('db.json')
