@@ -23,12 +23,8 @@ logger = logging.getLogger(__name__)
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "a-random-string")
 OWNER_ID = os.environ.get("OWNER_ID")
-
-# --- Persistent Data Path ---
-DATA_DIR = os.environ.get("RENDER_DISK_PATH", ".")
-DB_FILE = os.path.join(DATA_DIR, "db.json")
-SERIES_DB_FILE = os.path.join(DATA_DIR, "series_db.json")
-
+DB_FILE = "db.json"
+SERIES_DB_FILE = "series_db.json"
 
 # --- Global Variables ---
 db: Dict[str, Any] = {}
@@ -145,9 +141,9 @@ def load_databases():
     try:
         with open(SERIES_DB_FILE, 'r', encoding='utf-8') as f:
             series_db = json.load(f)
-            logger.info(f"Loaded series database: {len(series_db)} series from {SERIES_DB_FILE}")
+            logger.info(f"Loaded series database: {len(series_db)} series")
     except Exception as e:
-        logger.warning(f"Series database not found at {SERIES_DB_FILE}: {e}")
+        logger.warning(f"Series database not found: {e}")
         series_db = {}
 
 def search_content(query: str) -> List[Dict]:

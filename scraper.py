@@ -341,40 +341,32 @@ def main():
             logger.warning(f"No IMDb ID for: {result.get('title')}")
             skipped += 1
 
-    # Define data directory for persistent storage
-    DATA_DIR = os.environ.get("RENDER_DISK_PATH", ".")
-    DB_PATH = os.path.join(DATA_DIR, 'db.json')
-    SERIES_DB_PATH = os.path.join(DATA_DIR, 'series_db.json')
-
-    # Create data directory if it doesn't exist
-    os.makedirs(DATA_DIR, exist_ok=True)
-
     # Write database
     try:
         # Backup existing database
-        if os.path.exists(DB_PATH):
-            os.rename(DB_PATH, DB_PATH + '.backup')
-            logger.info(f"Created backup of existing database at {DB_PATH}.backup")
+        if os.path.exists('db.json'):
+            os.rename('db.json', 'db.json.backup')
+            logger.info("Created backup of existing database")
         
-        with open(DB_PATH, 'w', encoding='utf-8') as f:
+        with open('db.json', 'w', encoding='utf-8') as f:
             json.dump(final_db, f, ensure_ascii=False, indent=2)
         
         # Also save series mapping
-        with open(SERIES_DB_PATH, 'w', encoding='utf-8') as f:
+        with open('series_db.json', 'w', encoding='utf-8') as f:
             json.dump(series_db, f, ensure_ascii=False, indent=2)
         
-        logger.info(f"Successfully created {DB_PATH} with {len(final_db)} entries")
-        logger.info(f"Created {SERIES_DB_PATH} with {len(series_db)} series")
+        logger.info(f"Successfully created db.json with {len(final_db)} entries")
+        logger.info(f"Created series_db.json with {len(series_db)} series")
         logger.info(f"Skipped {skipped} entries without IMDb IDs")
         
         # Verify file
-        size = os.path.getsize(DB_PATH)
+        size = os.path.getsize('db.json')
         logger.info(f"Database file size: {size:,} bytes")
         
         return True
         
     except Exception as e:
-        logger.error(f"Error writing database to {DATA_DIR}: {e}")
+        logger.error(f"Error writing database: {e}")
         return False
     finally:
         SCRAPER_RUNNING = False

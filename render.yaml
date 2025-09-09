@@ -1,26 +1,17 @@
 # render.yaml
-# This configuration defines a web service for the bot and a cron job for the scraper.
-# It also creates a persistent disk to store the database.
-
-disks:
-  - name: subto-data
-    mountPath: /data
-    sizeGB: 1
+# This configuration defines a simple web service for the bot.
+# The database is now built and updated via a scheduled GitHub Action.
 
 services:
   # Web service for the FastAPI bot
   - type: web
     name: subtitle-bot
     env: python
-    # The scraper is no longer run at build time.
-    buildCommand: "pip install -r requirements.txt"
-    # Standard command to start the FastAPI server.
+    # The build command now runs the scraper to ensure the db.json exists on initial deploy.
+    # Subsequent updates will be committed to the repo by the GitHub Action, triggering a new deploy.
+    buildCommand: "pip install -r requirements.txt && SCRAPER_MAX_PAGES=15 python scraper.py"
     startCommand: "uvicorn app:app --host 0.0.0.0 --port $PORT"
     healthCheckPath: /healthz
-    # Mount the persistent disk created above.
-    disk:
-      name: subto-data
-      mountPath: /data
 
     envVars:
       - key: TELEGRAM_BOT_TOKEN
@@ -29,29 +20,5 @@ services:
         generateValue: true # Auto-generate a secure secret
       - key: OWNER_ID
         sync: false # Keep this secret
-      - key: RENDER_DISK_PATH
-        value: /data # Make the disk path available to the app
-      - key: PYTHON_VERSION
-        value: 3.11.4
-
-  # Cron job for the scraper
-  - type: cron
-    name: subtitle-scraper
-    env: python
-    # Schedule to run at 00:00 UTC every day.
-    # Format is 'Minute Hour Day Month DayOfWeek'
-    schedule: "0 0 * * *"
-    # Command to run the scraper script.
-    command: "python scraper.py"
-    # Mount the same persistent disk.
-    disk:
-      name: subto-data
-      mountPath: /data
-
-    envVars:
-      - key: SCRAPER_MAX_PAGES
-        value: 200 # Scrape 200 pages by default
-      - key: RENDER_DISK_PATH
-        value: /data
       - key: PYTHON_VERSION
         value: 3.11.4

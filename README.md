@@ -7,6 +7,7 @@ The project is built using Python with the following key technologies:
 - **Uvicorn**: As the production web server.
 - **aiohttp**: For asynchronous communication with the Telegram Bot API and for downloading files.
 - **BeautifulSoup4/requests**: For scraping the subtitle data.
+- **GitHub Actions**: For automated, scheduled scraping.
 
 ## Features
 
@@ -17,44 +18,41 @@ The project is built using Python with the following key technologies:
 - Health check endpoint (`/healthz`) for monitoring.
 - Startup notification sent to the bot owner.
 
-## Architecture on Render
+## Architecture
 
-This project is designed for a robust and scalable deployment on Render using a **Web Service** and a **Cron Job**.
+This project uses a combination of a **Render Web Service** for the bot and a **GitHub Action** for scraping to create a cost-effective, automated solution.
 
-- **Web Service**: A FastAPI application that serves the Telegram bot and a simple API. It responds to user queries by searching the `db.json` file.
-- **Cron Job**: A scheduled task that runs the `scraper.py` script once a day. This job scrapes malayalamsubtitles.org and rebuilds the `db.json` and `series_db.json` files.
-- **Persistent Disk**: Both the Web Service and the Cron Job are connected to a shared persistent disk. The Cron Job writes the database files to the disk, and the Web Service reads from it. This ensures the bot always has fresh data without requiring a rebuild or restart.
+- **Render Web Service**: A free-tier web service hosts the FastAPI application (`app.py`). This is the live bot that responds to users on Telegram.
+- **GitHub Action**: A scheduled workflow (`.github/workflows/scraper.yml`) runs the `scraper.py` script once a day. It scrapes the latest subtitles, and if it finds any changes, it commits the updated `db.json` file back to the repository.
+- **Automatic Updates**: When the GitHub Action pushes a new commit, it automatically triggers a new deployment on Render. This rebuilds the bot with the fresh database, ensuring the data is always up-to-date without any manual work or extra cost.
 
-## Deployment on Render
-
-This bot is designed to be deployed on the Render.
+## Deployment
 
 ### 1. Fork the Repository
 
 Fork this repository to your own GitHub account.
 
-### 2. Create a New "Blueprint" on Render
+### 2. Create the Web Service on Render
 
 - Connect your GitHub account to Render.
-- In the Render Dashboard, click "New" and then "Blueprint".
-- Select your forked repository. Render will automatically detect the `render.yaml` file and configure the two services (the web service and the cron job).
-- Approve the creation of the services.
+- In the Render Dashboard, click "New" and then "Web Service".
+- Select your forked repository and give the service a name.
+- Render will detect it's a Python environment. Set the following properties:
+  - **Build Command**: `pip install -r requirements.txt && python scraper.py`
+  - **Start Command**: `uvicorn app:app --host 0.0.0.0 --port $PORT`
+- Add the required environment variables under the "Environment" tab.
 
 ### 3. Set Environment Variables
 
-After the services are created, you will need to set your secrets. Go to the "Environment" tab for the `subtitle-bot` **web service** and add the following secrets:
-
 - **`TELEGRAM_BOT_TOKEN`**: Your bot token obtained from BotFather on Telegram.
-- **`OWNER_ID`**: (Optional) Your personal Telegram User ID. If you provide this, the bot will send you a "Bot is up and running!" message every time it deploys.
+- **`OWNER_ID`**: (Optional) Your personal Telegram User ID.
 
-You can also customize the scraper's behavior by setting environment variables for the `subtitle-scraper` **cron job**:
+That's it! The GitHub Action is already configured in the repository and will start running on its schedule.
 
-- **`SCRAPER_MAX_PAGES`**: (Optional) The number of pages to scrape. The default is `200`. You can increase or decrease this value to control how large the database is and how long the scraper runs.
+### How to Manually Update the Database
 
-### How it Works
-
-- The `render.yaml` file configures the entire deployment.
-- The **`subtitle-scraper` cron job** runs daily, executing `python scraper.py` to build the `db.json` and `series_db.json` on the shared persistent disk.
-- The **`subtitle-bot` web service** runs the FastAPI application. On startup, it loads the database files from the persistent disk.
-- The web service automatically sets its own Telegram webhook using the `RENDER_EXTERNAL_URL` provided by Render. This makes the setup process seamless.
-- The free web service will "spin down" after 15 minutes of inactivity, but it will wake up automatically when it receives a new message. The first response after a cold start may take a few seconds.
+If you don't want to wait for the daily automatic run, you can manually trigger the scraper at any time:
+1.  Go to your forked repository on GitHub.
+2.  Click on the **"Actions"** tab.
+3.  In the left sidebar, click on the **"Daily Scraper"** workflow.
+4.  Click the **"Run workflow"** dropdown button and then the green **"Run workflow"** button to start the process.
