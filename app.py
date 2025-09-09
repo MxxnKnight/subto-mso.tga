@@ -12,6 +12,8 @@ import re
 
 from fastapi import FastAPI, Request, Response, HTTPException, Query
 
+app = FastAPI(docs_url=None, redoc_url=None)
+
 # --- Logging Setup ---
 logging.basicConfig(
     level=logging.INFO,
