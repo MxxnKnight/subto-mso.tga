@@ -162,20 +162,21 @@ def scrape_detail_page(url):
             for row in rows:
                 cells = row.select('td')
                 if len(cells) >= 2:
-                    label = clean_text(cells[0].get_text()).lower()
+                    # Clean the label thoroughly for stricter matching
+                    label = clean_text(cells[0].get_text()).lower().strip().replace(':', '')
                     value = clean_text(cells[1].get_text())
                     
-                    if 'language' in label or 'ഭാഷ' in label:
+                    if label == 'language' or label == 'ഭാഷ':
                         details['language'] = value
-                    elif 'director' in label or 'സംവിധായകൻ' in label:
+                    elif label == 'director' or label == 'സംവിധായകൻ':
                         details['director'] = value
-                    elif 'genre' in label or 'വിഭാഗം' in label:
+                    elif label == 'genre' or label == 'വിഭാഗം':
                         details['genre'] = value
-                    elif 'certification' in label or 'സർട്ടിഫിക്കേഷൻ' in label:
+                    elif label == 'certification' or label == 'സർട്ടിഫിക്കേഷൻ':
                         details['certification'] = value
-                    elif 'rating' in label or 'റേറ്റിംഗ്' in label:
+                    elif label == 'imdb rating' or label == 'റേറ്റിംഗ്':
                         details['imdb_rating'] = value
-                    elif 'translat' in label or 'പരിഭാഷ' in label:
+                    elif label.startswith('translat') or label == 'പരിഭാഷകർ': # translations, translator, etc.
                         # Translator info
                         translator_link = cells[1].select_one('a')
                         if translator_link:

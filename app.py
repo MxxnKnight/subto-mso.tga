@@ -680,11 +680,20 @@ async def handle_callback_query(callback_data: str, message_data: dict, chat_id:
                     }
         
         elif callback_data == 'back_search':
-            return {
-                'method': 'editMessageText',
-                'text': '🔍 Send me a movie or series name to search for subtitles.',
-                'reply_markup': {'inline_keyboard': [[{'text': '❌ Close', 'callback_data': 'menu_close'}]]}
-            }
+            # If the original message had a photo, we must edit the caption.
+            # Otherwise, we can edit the text. This avoids a Telegram API error.
+            if 'photo' in message_data:
+                return {
+                    'method': 'editMessageCaption',
+                    'caption': '🔍 Send me a movie or series name to search again.',
+                    'reply_markup': {'inline_keyboard': [[{'text': '❌ Close', 'callback_data': 'menu_close'}]]}
+                }
+            else:
+                return {
+                    'method': 'editMessageText',
+                    'text': '🔍 Send me a movie or series name to search for subtitles.',
+                    'reply_markup': {'inline_keyboard': [[{'text': '❌ Close', 'callback_data': 'menu_close'}]]}
+                }
         
         # Default response
         return {
