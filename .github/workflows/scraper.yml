@@ -16,8 +16,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check out repository
+      - name: Check out the correct branch
         uses: actions/checkout@v3
+        with:
+          ref: 'jules-fix-bot'
 
       - name: Set up Python
         uses: actions/setup-python@v4
