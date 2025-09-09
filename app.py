@@ -4,7 +4,6 @@ import logging
 import asyncio
 import zipfile
 import tempfile
-import threading
 import time
 from http import HTTPStatus
 from typing import Dict, Any, List
@@ -24,12 +23,16 @@ logger = logging.getLogger(__name__)
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "a-random-string")
 OWNER_ID = os.environ.get("OWNER_ID")
-DB_FILE = os.environ.get("DB_FILE", "db.json")
+
+# --- Persistent Data Path ---
+DATA_DIR = os.environ.get("RENDER_DISK_PATH", ".")
+DB_FILE = os.path.join(DATA_DIR, "db.json")
+SERIES_DB_FILE = os.path.join(DATA_DIR, "series_db.json")
+
 
 # --- Global Variables ---
 db: Dict[str, Any] = {}
 series_db: Dict[str, Dict[int, str]] = {}
-scraper_status = {"running": False, "progress": ""}
 
 # --- Menu Messages ---
 WELCOME_MESSAGE = """
@@ -140,11 +143,11 @@ def load_databases():
     
     # Load series database
     try:
-        with open('series_db.json', 'r', encoding='utf-8') as f:
+        with open(SERIES_DB_FILE, 'r', encoding='utf-8') as f:
             series_db = json.load(f)
-            logger.info(f"Loaded series database: {len(series_db)} series")
+            logger.info(f"Loaded series database: {len(series_db)} series from {SERIES_DB_FILE}")
     except Exception as e:
-        logger.warning(f"Series database not found: {e}")
+        logger.warning(f"Series database not found at {SERIES_DB_FILE}: {e}")
         series_db = {}
 
 def search_content(query: str) -> List[Dict]:
@@ -224,14 +227,15 @@ def get_series_seasons(series_name: str) -> Dict[int, str]:
 async def download_and_upload_subtitle(download_url: str, chat_id: str, title: str) -> bool:
     """Download subtitle file and upload to Telegram."""
     if not download_url or not TOKEN:
+        logger.warning(f"Download aborted: Missing download_url or TOKEN for chat_id {chat_id}")
         return False
     
     import aiohttp
     import aiofiles
     
+    logger.info(f"[ChatID: {chat_id}] Starting download for '{title}' from URL: {download_url}")
+
     try:
-        logger.info(f"Starting download: {download_url}")
-        
         # Send initial message
         await send_telegram_message({
             'chat_id': chat_id,
@@ -241,75 +245,98 @@ async def download_and_upload_subtitle(download_url: str, chat_id: str, title: s
         
         # Create temp directory
         with tempfile.TemporaryDirectory() as temp_dir:
+            logger.info(f"[ChatID: {chat_id}] Created temporary directory: {temp_dir}")
+
             # Download file with proper headers
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Referer': 'https://malayalamsubtitles.org/'
             }
             
             async with aiohttp.ClientSession(headers=headers, timeout=aiohttp.ClientTimeout(total=60)) as session:
+                logger.info(f"[ChatID: {chat_id}] Attempting to GET download URL.")
                 async with session.get(download_url) as resp:
+                    logger.info(f"[ChatID: {chat_id}] Received response with status: {resp.status}")
                     if resp.status != 200:
-                        logger.error(f"Download failed: {resp.status}")
+                        error_body = await resp.text()
+                        logger.error(f"[ChatID: {chat_id}] Download failed with status {resp.status}. Response: {error_body[:200]}")
                         await send_telegram_message({
                             'chat_id': chat_id,
-                            'text': f"❌ Failed to download subtitle (HTTP {resp.status})"
+                            'text': f"❌ Failed to download subtitle (Server returned HTTP {resp.status}). Please try again later."
                         })
                         return False
                     
                     # Get filename from headers or URL
-                    filename = f"{title.replace(' ', '_')}.srt"
+                    filename = f"{title.replace(' ', '_')}.zip" # Default to zip as it's common
                     if 'content-disposition' in resp.headers:
                         cd = resp.headers['content-disposition']
-                        filename_match = re.search(r'filename[*]?="([^"]+)"', cd)
+                        filename_match = re.search(r'filename\*?=(.+)', cd, re.IGNORECASE)
                         if filename_match:
-                            filename = filename_match.group(1)
-                    elif download_url:
-                        url_filename = download_url.split('/')[-1]
+                            raw_filename = filename_match.group(1).strip('"')
+                            # Handle URL encoding e.g. UTF-8''filename.zip
+                            if "''" in raw_filename:
+                                raw_filename = raw_filename.split("''")[-1]
+                            filename = raw_filename
+                        logger.info(f"[ChatID: {chat_id}] Filename from headers: {filename}")
+                    else:
+                        parsed_url = urlparse(download_url)
+                        url_filename = os.path.basename(parsed_url.path)
                         if '.' in url_filename:
                             filename = url_filename
+                        logger.info(f"[ChatID: {chat_id}] Filename from URL: {filename}")
+
                     
                     file_path = os.path.join(temp_dir, filename)
                     
                     # Save file
+                    bytes_written = 0
                     async with aiofiles.open(file_path, 'wb') as f:
                         async for chunk in resp.content.iter_chunked(8192):
                             await f.write(chunk)
+                            bytes_written += len(chunk)
                     
-                    logger.info(f"File downloaded: {file_path}, size: {os.path.getsize(file_path)}")
+                    if bytes_written == 0:
+                        logger.warning(f"[ChatID: {chat_id}] Downloaded file is empty.")
+                        await send_telegram_message({'chat_id': chat_id, 'text': "❌ Downloaded file was empty."})
+                        return False
+
+                    logger.info(f"[ChatID: {chat_id}] File saved to {file_path}, size: {bytes_written} bytes.")
                     
                     # Update progress
                     await send_telegram_message({
                         'chat_id': chat_id,
-                        'text': f"📤 Uploading subtitle file..."
+                        'text': f"📤 Uploading subtitle file(s)..."
                     })
                     
                     # Check if it's a zip file
                     if filename.lower().endswith('.zip'):
+                        logger.info(f"[ChatID: {chat_id}] Detected zip file. Processing with upload_zip_contents.")
                         return await upload_zip_contents(file_path, chat_id, title)
                     else:
+                        logger.info(f"[ChatID: {chat_id}] Detected single file. Processing with upload_single_file.")
                         return await upload_single_file(file_path, chat_id, filename)
     
     except asyncio.TimeoutError:
-        logger.error("Download timeout")
+        logger.error(f"[ChatID: {chat_id}] Download timeout for {download_url}")
         await send_telegram_message({
             'chat_id': chat_id,
-            'text': "⏰ Download timeout. Please try again later."
+            'text': "⏰ Download timed out. The server took too long to respond. Please try again later."
         })
         return False
     except Exception as e:
-        logger.error(f"Error downloading/uploading subtitle: {e}")
+        logger.exception(f"[ChatID: {chat_id}] An unexpected error occurred in download_and_upload_subtitle: {e}")
         await send_telegram_message({
             'chat_id': chat_id,
-            'text': f"❌ Error: {str(e)}"
+            'text': f"❌ An unexpected error occurred. The admin has been notified."
         })
         return False
 
 async def upload_zip_contents(zip_path: str, chat_id: str, title: str) -> bool:
     """Extract and upload all files from zip."""
+    logger.info(f"[ChatID: {chat_id}] Processing zip file: {zip_path}")
     try:
-        logger.info(f"Processing zip file: {zip_path}")
-        
         with tempfile.TemporaryDirectory() as extract_dir:
+            logger.info(f"[ChatID: {chat_id}] Extracting zip to {extract_dir}")
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                 zip_ref.extractall(extract_dir)
             
@@ -320,10 +347,12 @@ async def upload_zip_contents(zip_path: str, chat_id: str, title: str) -> bool:
                     if file.lower().endswith(('.srt', '.ass', '.ssa', '.vtt')):
                         subtitle_files.append(os.path.join(root, file))
             
+            logger.info(f"[ChatID: {chat_id}] Found {len(subtitle_files)} subtitle file(s) in zip.")
+
             if not subtitle_files:
                 await send_telegram_message({
                     'chat_id': chat_id,
-                    'text': "❌ No subtitle files found in the archive."
+                    'text': "🤷‍♂️ No subtitle files (.srt, .ass, etc.) were found inside the downloaded archive."
                 })
                 return False
             
@@ -333,32 +362,48 @@ async def upload_zip_contents(zip_path: str, chat_id: str, title: str) -> bool:
                 filename = os.path.basename(file_path)
                 if await upload_single_file(file_path, chat_id, filename):
                     uploaded_count += 1
+                else:
+                    logger.warning(f"[ChatID: {chat_id}] Failed to upload {filename} from zip.")
                 await asyncio.sleep(1)  # Rate limiting
             
-            await send_telegram_message({
-                'chat_id': chat_id,
-                'text': f"✅ Uploaded {uploaded_count} subtitle files from archive."
-            })
+            logger.info(f"[ChatID: {chat_id}] Successfully uploaded {uploaded_count}/{len(subtitle_files)} files.")
+
+            if uploaded_count > 0:
+                await send_telegram_message({
+                    'chat_id': chat_id,
+                    'text': f"✅ Successfully uploaded {uploaded_count} subtitle file(s) for **{title}**."
+                })
             
             return uploaded_count > 0
+
+    except zipfile.BadZipFile:
+        logger.error(f"[ChatID: {chat_id}] The downloaded file is not a valid zip archive.")
+        await send_telegram_message({'chat_id': chat_id, 'text': "❌ The downloaded file was corrupted or not a valid zip file."})
+        # Fallback: try to upload the file directly
+        return await upload_single_file(zip_path, chat_id, os.path.basename(zip_path))
     except Exception as e:
-        logger.error(f"Error processing zip file: {e}")
+        logger.exception(f"[ChatID: {chat_id}] Error processing zip file: {e}")
+        await send_telegram_message({'chat_id': chat_id, 'text': "❌ An error occurred while processing the zip file."})
         return False
 
 async def upload_single_file(file_path: str, chat_id: str, filename: str) -> bool:
     """Upload single file to Telegram."""
     import aiohttp
     
+    logger.info(f"[ChatID: {chat_id}] Preparing to upload single file: {filename} from {file_path}")
+
     try:
         if not os.path.exists(file_path):
-            logger.error(f"File not found: {file_path}")
+            logger.error(f"[ChatID: {chat_id}] File not found for upload: {file_path}")
             return False
         
         file_size = os.path.getsize(file_path)
-        if file_size > 50 * 1024 * 1024:  # 50MB limit
+        logger.info(f"[ChatID: {chat_id}] File size: {file_size} bytes.")
+        if file_size > 49 * 1024 * 1024:  # 49MB limit for safety
+            logger.warning(f"[ChatID: {chat_id}] File {filename} is too large ({file_size} bytes).")
             await send_telegram_message({
                 'chat_id': chat_id,
-                'text': f"❌ File {filename} is too large (>50MB). Telegram limit exceeded."
+                'text': f"❌ File **{filename}** is too large ({file_size / 1024 / 1024:.2f} MB). Telegram's limit is 50MB."
             })
             return False
         
@@ -369,19 +414,20 @@ async def upload_single_file(file_path: str, chat_id: str, filename: str) -> boo
                 data = aiohttp.FormData()
                 data.add_field('chat_id', chat_id)
                 data.add_field('document', f, filename=filename)
-                data.add_field('caption', f'📁 {filename}')
+                data.add_field('caption', f' subtitles')
                 
+                logger.info(f"[ChatID: {chat_id}] Posting file to Telegram API.")
                 async with session.post(url, data=data) as resp:
                     success = resp.status == 200
                     if not success:
                         error_text = await resp.text()
-                        logger.error(f"Upload failed: {resp.status} - {error_text}")
+                        logger.error(f"[ChatID: {chat_id}] Telegram upload failed with status {resp.status}: {error_text}")
                     else:
-                        logger.info(f"Successfully uploaded: {filename}")
+                        logger.info(f"[ChatID: {chat_id}] Successfully uploaded {filename} to Telegram.")
                     return success
     
     except Exception as e:
-        logger.error(f"Error uploading file: {e}")
+        logger.exception(f"[ChatID: {chat_id}] An unexpected error occurred during file upload: {e}")
         return False
 
 def create_menu_keyboard(current_menu: str) -> Dict:
@@ -537,44 +583,6 @@ def create_detail_keyboard(entry: Dict, imdb_id: str) -> Dict:
     
     return {'inline_keyboard': keyboard}
 
-def start_scraper_background():
-    """Start scraper in background thread."""
-    def scraper_thread():
-        global scraper_status
-        try:
-            scraper_status["running"] = True
-            scraper_status["progress"] = "Starting scraper..."
-            
-            # Import and run scraper
-            from scraper import start_scraper
-            success = start_scraper()
-            
-            scraper_status["running"] = False
-            if success:
-                scraper_status["progress"] = "Scraper completed successfully!"
-                # Reload databases
-                load_databases()
-            else:
-                scraper_status["progress"] = "Scraper failed!"
-                
-        except Exception as e:
-            logger.error(f"Scraper thread error: {e}")
-            scraper_status["running"] = False
-            scraper_status["progress"] = f"Scraper error: {str(e)}"
-    
-    thread = threading.Thread(target=scraper_thread)
-    thread.daemon = True
-    thread.start()
-
-def stop_scraper_background():
-    """Stop scraper gracefully."""
-    try:
-        from scraper import stop_scraper
-        stop_scraper()
-        scraper_status["progress"] = "Stop signal sent to scraper..."
-    except Exception as e:
-        logger.error(f"Error stopping scraper: {e}")
-
 async def handle_callback_query(callback_data: str, message_data: dict, chat_id: str) -> Dict:
     """Handle callback query from inline keyboards."""
     try:
@@ -612,56 +620,6 @@ async def handle_callback_query(callback_data: str, message_data: dict, chat_id:
             elif menu_type == 'close':
                 return {
                     'method': 'deleteMessage'
-                }
-        
-        elif callback_data.startswith('scraper_'):
-            action = callback_data.replace('scraper_', '')
-            
-            if action == 'start':
-                if scraper_status["running"]:
-                    return {
-                        'method': 'answerCallbackQuery',
-                        'text': 'Scraper is already running!',
-                        'show_alert': True
-                    }
-                else:
-                    start_scraper_background()
-                    return {
-                        'method': 'editMessageText',
-                        'text': f"🔄 **Scraper Started!**\n\nStatus: {scraper_status['progress']}\n\nThis may take several minutes...",
-                        'parse_mode': 'Markdown',
-                        'reply_markup': {
-                            'inline_keyboard': [
-                                [{'text': '⏹️ Stop Scraper', 'callback_data': 'scraper_stop'}],
-                                [{'text': '📊 Check Status', 'callback_data': 'scraper_status'}],
-                                [{'text': '❌ Close', 'callback_data': 'menu_close'}]
-                            ]
-                        }
-                    }
-            elif action == 'stop':
-                stop_scraper_background()
-                return {
-                    'method': 'answerCallbackQuery',
-                    'text': 'Stop signal sent to scraper.',
-                    'show_alert': True
-                }
-            elif action == 'status':
-                status_text = f"🔄 **Scraper Status**\n\n"
-                status_text += f"**Running:** {'Yes' if scraper_status['running'] else 'No'}\n"
-                status_text += f"**Progress:** {scraper_status['progress']}\n"
-                status_text += f"**Database Size:** {len(db)} entries"
-                
-                return {
-                    'method': 'editMessageText',
-                    'text': status_text,
-                    'parse_mode': 'Markdown',
-                    'reply_markup': {
-                        'inline_keyboard': [
-                            [{'text': '▶️ Start Scraper', 'callback_data': 'scraper_start'}] if not scraper_status['running'] else [{'text': '⏹️ Stop Scraper', 'callback_data': 'scraper_stop'}],
-                            [{'text': '🔄 Refresh Status', 'callback_data': 'scraper_status'}],
-                            [{'text': '❌ Close', 'callback_data': 'menu_close'}]
-                        ]
-                    }
                 }
         
         elif callback_data.startswith('view_'):
@@ -783,19 +741,7 @@ async def handle_telegram_message(message_data: dict) -> Dict:
                     'text': f"Broadcast feature coming soon!\n\nMessage to broadcast: {broadcast_text}",
                     'parse_mode': 'Markdown'
                 }
-            elif text == '/scrape' or text == '/scrape_start':
-                return {
-                    'chat_id': chat_id,
-                    'text': "🛠 Scraper Control Panel",
-                    'parse_mode': 'Markdown',
-                    'reply_markup': {
-                        'inline_keyboard': [
-                            [{'text': '▶️ Start Scraper', 'callback_data': 'scraper_start'}],
-                            [{'text': '📊 Scraper Status', 'callback_data': 'scraper_status'}],
-                            [{'text': '❌ Close', 'callback_data': 'menu_close'}]
-                        ]
-                    }
-                }
+            # Add other admin commands here with elif
 
     except Exception as e:
         logger.error(f"Error handling telegram message: {e}")

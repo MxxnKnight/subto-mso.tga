@@ -15,8 +15,8 @@ BASE_URL = "https://malayalamsubtitles.org"
 RELEASES_URL = f"{BASE_URL}/releases/"
 
 # Configuration
-ENVIRONMENT = os.environ.get("ENVIRONMENT", "development")
-MAX_PAGES = int(os.environ.get("SCRAPER_MAX_PAGES", "15" if ENVIRONMENT == "production" else "5"))
+# Set a high default for cron jobs, but allow override. 15 pages is roughly 60 entries.
+MAX_PAGES = int(os.environ.get("SCRAPER_MAX_PAGES", "200"))
 SCRAPER_RUNNING = False
 
 HEADERS = {
@@ -340,71 +340,43 @@ def main():
             logger.warning(f"No IMDb ID for: {result.get('title')}")
             skipped += 1
 
+    # Define data directory for persistent storage
+    DATA_DIR = os.environ.get("RENDER_DISK_PATH", ".")
+    DB_PATH = os.path.join(DATA_DIR, 'db.json')
+    SERIES_DB_PATH = os.path.join(DATA_DIR, 'series_db.json')
+
+    # Create data directory if it doesn't exist
+    os.makedirs(DATA_DIR, exist_ok=True)
+
     # Write database
     try:
         # Backup existing database
-        if os.path.exists('db.json'):
-            os.rename('db.json', 'db.json.backup')
-            logger.info("Created backup of existing database")
+        if os.path.exists(DB_PATH):
+            os.rename(DB_PATH, DB_PATH + '.backup')
+            logger.info(f"Created backup of existing database at {DB_PATH}.backup")
         
-        with open('db.json', 'w', encoding='utf-8') as f:
+        with open(DB_PATH, 'w', encoding='utf-8') as f:
             json.dump(final_db, f, ensure_ascii=False, indent=2)
         
         # Also save series mapping
-        with open('series_db.json', 'w', encoding='utf-8') as f:
+        with open(SERIES_DB_PATH, 'w', encoding='utf-8') as f:
             json.dump(series_db, f, ensure_ascii=False, indent=2)
         
-        logger.info(f"Successfully created db.json with {len(final_db)} entries")
-        logger.info(f"Created series_db.json with {len(series_db)} series")
+        logger.info(f"Successfully created {DB_PATH} with {len(final_db)} entries")
+        logger.info(f"Created {SERIES_DB_PATH} with {len(series_db)} series")
         logger.info(f"Skipped {skipped} entries without IMDb IDs")
         
         # Verify file
-        size = os.path.getsize('db.json')
+        size = os.path.getsize(DB_PATH)
         logger.info(f"Database file size: {size:,} bytes")
         
         return True
         
     except Exception as e:
-        logger.error(f"Error writing database: {e}")
+        logger.error(f"Error writing database to {DATA_DIR}: {e}")
         return False
     finally:
         SCRAPER_RUNNING = False
-    
-    import threading
-
-# Shared status dictionary
-scraper_status = {
-    "running": False,
-    "progress": "Idle"
-}
-
-_scraper_thread = None
-
-def scraper_task():
-    global scraper_status
-    try:
-        scraper_status["running"] = True
-        scraper_status["progress"] = "In progress..."
-        start_scraper()  # this calls your existing main()
-        scraper_status["progress"] = "Completed"
-    except Exception as e:
-        scraper_status["progress"] = f"Error: {e}"
-    finally:
-        scraper_status["running"] = False
-
-def start_scraper_background():
-    """Run scraper in a background thread"""
-    global _scraper_thread
-    if _scraper_thread and _scraper_thread.is_alive():
-        return  # already running
-    _scraper_thread = threading.Thread(target=scraper_task, daemon=True)
-    _scraper_thread.start()
-
-def stop_scraper_background():
-    """Request scraper to stop gracefully"""
-    scraper_status["progress"] = "Stopping..."
-    stop_scraper()  # your existing function
-   
 
 if __name__ == "__main__":
     success = start_scraper()
