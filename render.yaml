@@ -7,9 +7,8 @@ services:
   - type: web
     name: subtitle-bot
     env: python
-    # The build command now runs the scraper to ensure the db.json exists on initial deploy.
-    # Subsequent updates will be committed to the repo by the GitHub Action, triggering a new deploy.
-    buildCommand: "pip install -r requirements.txt && SCRAPER_MAX_PAGES=15 python scraper.py"
+    # The build command just installs dependencies. The db.json is sourced from the repository.
+    buildCommand: "pip install -r requirements.txt"
     startCommand: "uvicorn app:app --host 0.0.0.0 --port $PORT"
     healthCheckPath: /healthz
 
