@@ -753,3 +753,83 @@ async def handle_telegram_message(message_data: dict) -> Dict:
     except Exception as e:
         logger.error(f"Error handling telegram message: {e}")
         return None
+
+# --- Telegram API Communication ---
+async def send_telegram_message(payload: Dict):
+    """Send a message to the Telegram API."""
+    import aiohttp
+    url = f"https://api.telegram.org/bot{TOKEN}/{payload.get('method', 'sendMessage')}"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    logger.error(f"Telegram API error: {response.status} - {error_text}")
+                return await response.json()
+    except Exception as e:
+        logger.error(f"Error sending message to Telegram: {e}")
+    return None
+
+
+# --- FastAPI Application Events ---
+@app.on_event("startup")
+async def startup_event():
+    """On startup, load DB, set webhook, and notify owner."""
+    load_databases()
+
+    webhook_url = os.environ.get("RENDER_EXTERNAL_URL")
+    if webhook_url and TOKEN:
+        webhook_url += "/telegram"
+        payload = {
+            'url': webhook_url,
+            'secret_token': WEBHOOK_SECRET
+        }
+        logger.info(f"Setting webhook to: {webhook_url}")
+        # Use a raw request to set the webhook
+        import requests
+        url = f"https://api.telegram.org/bot{TOKEN}/setWebhook"
+        response = requests.post(url, data=payload)
+        if response.status_code == 200:
+            logger.info("Webhook set successfully!")
+        else:
+            logger.error(f"Failed to set webhook: {response.status_code} - {response.text}")
+
+        # Notify owner if ID is set
+        if OWNER_ID:
+            await send_telegram_message({
+                'chat_id': OWNER_ID,
+                'text': '✅ **Bot is up and running!**',
+                'parse_mode': 'Markdown'
+            })
+
+@app.get("/healthz")
+def health_check():
+    """Health check endpoint for Render."""
+    return {"status": "ok"}
+
+@app.post("/telegram")
+async def telegram_webhook(request: Request):
+    """Main webhook endpoint to receive updates from Telegram."""
+    # Verify secret token
+    if request.headers.get("X-Telegram-Bot-Api-Secret-Token") != WEBHOOK_SECRET:
+        logger.warning("Invalid secret token received")
+        return Response(status_code=HTTPStatus.FORBIDDEN)
+
+    try:
+        data = await request.json()
+        response_payload = await handle_telegram_message(data)
+
+        if response_payload:
+            return response_payload
+
+    except json.JSONDecodeError:
+        logger.error("Failed to decode JSON from Telegram request")
+        return Response(status_code=HTTPStatus.BAD_REQUEST)
+
+    return Response(status_code=HTTPStatus.OK)
+
+@app.get("/api/subtitles")
+def api_search(query: str = Query(..., min_length=1)):
+    """REST API endpoint for searching subtitles."""
+    results = search_content(query)
+    return {"query": query, "results": results}
