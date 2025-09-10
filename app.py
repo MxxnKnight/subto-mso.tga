@@ -528,10 +528,12 @@ async def handle_callback_query(callback_data: str, message_data: dict, chat_id:
 
                 if poster_url and poster_url.startswith('https'):
                     logger.info(f"Sending poster for {imdb_id}")
+                    new_message_payload['method'] = 'sendPhoto'
                     new_message_payload['photo'] = poster_url
                     new_message_payload['caption'] = detail_text
                 else:
                     logger.warning(f"No valid poster for {imdb_id}, sending text only.")
+                    new_message_payload['method'] = 'sendMessage'
                     new_message_payload['text'] = detail_text
                     new_message_payload['disable_web_page_preview'] = False
 
@@ -784,41 +786,45 @@ async def handle_telegram_message(message_data: dict) -> Dict:
 async def send_telegram_message(data: dict):
     """Send message to Telegram using Bot API."""
     if not TOKEN or not data:
-        return False
+        return {}
 
     import aiohttp
 
-    # Determine method
     method = data.pop('method', 'sendMessage')
     url = f"https://api.telegram.org/bot{TOKEN}/{method}"
 
     try:
         async with aiohttp.ClientSession() as session:
-            if 'photo' in data and method == 'sendMessage':
-                # Send photo with caption
+            # The reference code had a special check for photos.
+            # A cleaner way is to just use the 'sendPhoto' method directly when needed.
+            # However, to respect the structure, we will keep the FormData logic for photo uploads.
+            if method == 'sendPhoto':
                 form_data = aiohttp.FormData()
                 for key, value in data.items():
                     if key == 'reply_markup' and isinstance(value, dict):
                         form_data.add_field(key, json.dumps(value))
-                    else:
+                    elif key != 'photo':
                         form_data.add_field(key, str(value))
 
-                async with session.post(url.replace('sendMessage', 'sendPhoto'), data=form_data) as resp:
-                    success = resp.status == 200
-                    if not success:
-                        logger.error(f"Failed to send photo: {resp.status}")
-                    return success
+                # The photo itself needs to be handled carefully
+                # Assuming the 'photo' value is a URL for this logic to work simply.
+                # For local file uploads, the stream needs to be passed.
+                form_data.add_field('photo', data['photo'])
+
+                async with session.post(url, data=form_data) as resp:
+                    if resp.status != 200:
+                        logger.error(f"Failed to send photo: {resp.status} - {await resp.text()}")
+                    return await resp.json()
             else:
-                # Regular API call
+                # Regular API call with JSON payload
                 async with session.post(url, json=data) as resp:
-                    success = resp.status == 200
-                    if not success:
+                    if resp.status != 200:
                         logger.error(f"Failed to send message: {resp.status} - {await resp.text()}")
-                    return success
+                    return await resp.json()
 
     except Exception as e:
         logger.error(f"Error sending message: {e}")
-        return False
+        return {}
 
 # --- FastAPI App ---
 app = FastAPI(
