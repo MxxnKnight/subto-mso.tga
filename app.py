@@ -30,9 +30,98 @@ db: Dict[str, Any] = {}
 series_db: Dict[str, Dict[int, str]] = {}
 
 # --- Bot UI Text ---
-WELCOME_MESSAGE = "🎬 **Welcome!**\nType a movie or series name to search."
-HELP_MESSAGE = "Type any movie/series name to search for subtitles. Use the buttons to navigate."
-ABOUT_MESSAGE = "This bot searches for Malayalam subtitles from malayalamsubtitles.org."
+WELCOME_MESSAGE = """
+🎬 **Welcome to Malayalam Subtitle Search Bot!**
+
+Your one-stop destination for high-quality Malayalam subtitles for movies and TV shows.
+
+🎯 **What can I do?**
+• Search for Malayalam subtitles
+• Download subtitle files instantly
+• Browse by movies or series
+• Get detailed movie information
+
+Just type any movie or series name to get started!
+"""
+
+ABOUT_MESSAGE = """
+ℹ️ **About This Bot**
+
+**Hosted on:** Render.com
+**Framework:** FastAPI + Custom Telegram Bot API
+**Database:** malayalamsubtitles.org
+**Developer:** Custom Malayalam Subtitle Bot
+**Version:** 2.0 Enhanced
+
+**Features:**
+✅ Real-time subtitle search
+✅ Instant file downloads
+✅ Series season management
+✅ Comprehensive movie details
+✅ Admin controls
+
+**Data Source:** malayalamsubtitles.org (scraped with permission)
+"""
+
+HELP_MESSAGE = """
+🆘 **How to Use This Bot**
+
+**🔍 Searching:**
+• Type any movie/series name
+• Use English names for better results
+• Add year for specific versions (e.g., "Dune 2021")
+
+**📺 Series:**
+• Search series name to see all seasons
+• Click season buttons to view episodes
+• Each season has separate download links
+
+**🎬 Movies:**
+• Direct search shows movie details
+• One-click download available
+• View IMDb ratings and details
+
+**💡 Tips:**
+• Try different name variations
+• Check spelling for better results
+• Use /stats to see database size
+
+**⚠️ Note:** This bot provides subtitle files only, not movie content.
+"""
+
+TOS_MESSAGE = """
+📋 **Terms of Service**
+
+**By using this bot, you agree to:**
+
+1. **Legal Use Only**
+   • Use subtitles for legally owned content only
+   • Respect copyright laws in your jurisdiction
+
+2. **Data Source**
+   • Content scraped from malayalamsubtitles.org
+   • Bot operates under fair use principles
+   • No copyright infringement intended
+
+3. **Limitations**
+   • Service provided "as-is" without warranties
+   • Uptime not guaranteed
+   • Database updated periodically
+
+4. **Prohibited Actions**
+   • No spam or abuse of bot services
+   • No commercial redistribution of content
+   • No automated scraping of this bot
+
+5. **Privacy**
+   • We don't store personal messages
+   • Search queries logged for improvement
+   • No data shared with third parties
+
+**Contact:** Message the bot admin for issues.
+
+By continuing to use this bot, you accept these terms.
+"""
 
 # --- Core Logic ---
 def load_databases():
@@ -102,7 +191,6 @@ async def download_and_upload_subtitle(download_url: str, chat_id: int, title: s
                         await upload_single_file(file_path, chat_id, filename, source_url)
     finally:
         if status_message_id:
-            await asyncio.sleep(3)
             await send_telegram_message({'method': 'deleteMessage', 'chat_id': chat_id, 'message_id': status_message_id})
 
 async def upload_zip_contents(zip_path: str, chat_id: int, source_url: str):
@@ -124,14 +212,16 @@ async def upload_single_file(file_path: str, chat_id: int, filename: str, source
         async with aiohttp.ClientSession() as session: await session.post(url, data=data)
 
 # --- UI Generation ---
-def create_menu_keyboard(context: str) -> Dict:
-    if context == 'home':
-        return {
-            'keyboard': [[{'text': '🔎 Search Subtitles'}], [{'text': 'ℹ️ About'}, {'text': '❓ Help'}]],
-            'resize_keyboard': True,
-            'one_time_keyboard': False
-        }
-    return {}
+def create_main_menu_keyboard() -> Dict:
+    return {
+        'inline_keyboard': [
+            [{'text': 'ℹ️ About', 'callback_data': 'menu_about'}, {'text': '🆘 Help', 'callback_data': 'menu_help'}],
+            [{'text': '📋 Terms of Service', 'callback_data': 'menu_tos'}]
+        ]
+    }
+
+def create_back_button_keyboard() -> Dict:
+    return {'inline_keyboard': [[{'text': '⬅️ Back to Main Menu', 'callback_data': 'menu_home'}]]}
 
 def create_search_results_keyboard(results: List[Dict]) -> Dict:
     keyboard = []
@@ -171,43 +261,105 @@ def format_movie_details(entry: Dict) -> str:
 async def handle_callback_query(query: dict) -> Dict:
     callback_data, message = query['data'], query.get('message', {})
     chat_id, message_id = message.get('chat', {}).get('id'), message.get('message_id')
-    payload = {'chat_id': chat_id, 'message_id': message_id}
+
+    payload = {'chat_id': chat_id, 'message_id': message_id, 'parse_mode': 'Markdown', 'disable_web_page_preview': True}
+
+    if callback_data == 'menu_home':
+        payload.update({'method': 'editMessageText', 'text': WELCOME_MESSAGE, 'reply_markup': create_main_menu_keyboard()})
+        return payload
+
+    if callback_data == 'menu_about':
+        payload.update({'method': 'editMessageText', 'text': ABOUT_MESSAGE, 'reply_markup': create_back_button_keyboard()})
+        return payload
+
+    if callback_data == 'menu_help':
+        payload.update({'method': 'editMessageText', 'text': HELP_MESSAGE, 'reply_markup': create_back_button_keyboard()})
+        return payload
+
+    if callback_data == 'menu_tos':
+        payload.update({'method': 'editMessageText', 'text': TOS_MESSAGE, 'reply_markup': create_back_button_keyboard()})
+        return payload
 
     if callback_data == 'menu_close':
-        payload['method'] = 'deleteMessage'
+        payload.update({'method': 'deleteMessage'})
+        return payload
+
     elif callback_data.startswith('v_'):
         unique_id = callback_data.replace('v_', '')
+
+        # Answer the callback query immediately to give feedback
+        await send_telegram_message({
+            'method': 'answerCallbackQuery',
+            'callback_query_id': query['id']
+        })
+
         if unique_id in db:
             entry = db[unique_id]
-            payload.update({'method': 'editMessageText', 'text': format_movie_details(entry), 'reply_markup': create_detail_keyboard(unique_id), 'parse_mode': 'Markdown', 'disable_web_page_preview': True})
+
+            # Delete the old message (the search results list)
+            await send_telegram_message({'method': 'deleteMessage', 'chat_id': chat_id, 'message_id': message_id})
+
+            # Prepare the new message payload
+            new_message_payload = {
+                'chat_id': chat_id,
+                'reply_markup': create_detail_keyboard(unique_id),
+                'parse_mode': 'Markdown'
+            }
+
+            # Use sendPhoto if poster exists, otherwise fall back to sendMessage
+            if entry.get('posterURL'):
+                new_message_payload.update({
+                    'method': 'sendPhoto',
+                    'photo': entry['posterURL'],
+                    'caption': format_movie_details(entry)
+                })
+            else:
+                logger.warning(f"No posterURL for {unique_id}. Falling back to sendMessage.")
+                new_message_payload.update({
+                    'method': 'sendMessage',
+                    'text': format_movie_details(entry),
+                    'disable_web_page_preview': True
+                })
+
+            await send_telegram_message(new_message_payload)
+
+        return None # Indicate that the action is fully handled
+
     elif callback_data.startswith('dl_'):
         unique_id = callback_data.replace('dl_', '')
         if unique_id in db:
             entry = db[unique_id]
             if entry.get('srtURL'):
+                # Start the download task in the background
                 asyncio.create_task(download_and_upload_subtitle(entry['srtURL'], chat_id, entry['title'], entry.get('source_url', '')))
+                # Return an answer to the callback query
                 return {'method': 'answerCallbackQuery', 'callback_query_id': query['id'], 'text': 'Download started!'}
-    return payload
+
+    return None # Return None by default if no specific payload is constructed
 
 async def handle_message_text(message: dict) -> Dict:
     text, chat_id = message['text'].strip(), message['chat']['id']
 
-    # --- Command Handling ---
     if text == '/start':
-        return {'chat_id': chat_id, 'text': WELCOME_MESSAGE, 'reply_markup': create_menu_keyboard('home'), 'parse_mode': 'Markdown'}
-    if text == '/help' or text == '❓ Help':
-        return {'chat_id': chat_id, 'text': HELP_MESSAGE, 'parse_mode': 'Markdown'}
-    if text == '/about' or text == 'ℹ️ About':
-        return {'chat_id': chat_id, 'text': ABOUT_MESSAGE, 'parse_mode': 'Markdown'}
-    if text == '🔎 Search Subtitles':
-        return {'chat_id': chat_id, 'text': "Okay, send me the name of the movie or series you're looking for.", 'parse_mode': 'Markdown'}
+        return {
+            'chat_id': chat_id,
+            'text': WELCOME_MESSAGE,
+            'reply_markup': create_main_menu_keyboard(),
+            'parse_mode': 'Markdown',
+            'disable_web_page_preview': True
+        }
 
-    # --- Search Handling ---
+    # All other text is treated as a search query
     results = search_content(text)
     if not results:
         return {'chat_id': chat_id, 'text': f"🤷‍♀️ No subtitles found for **{text}**.", 'parse_mode': 'Markdown'}
 
-    return {'chat_id': chat_id, 'text': f"🔎 Found {len(results)} results for **{text}**:", 'reply_markup': create_search_results_keyboard(results), 'parse_mode': 'Markdown'}
+    return {
+        'chat_id': chat_id,
+        'text': f"🔎 Found {len(results)} results for **{text}**:",
+        'reply_markup': create_search_results_keyboard(results),
+        'parse_mode': 'Markdown'
+    }
 
 # --- FastAPI Routes & Events ---
 @app.on_event("startup")
