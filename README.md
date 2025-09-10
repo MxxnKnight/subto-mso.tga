@@ -46,7 +46,7 @@ For the scraper to be able to save the updated database back to your repository,
 
 - **`TELEGRAM_BOT_TOKEN`**: Your bot token obtained from BotFather on Telegram.
 - **`OWNER_ID`**: (Optional) Your personal Telegram User ID.
-- **`WEBHOOK_SECRET`**: Render will create this for you automatically if you use the `render.yaml` file. If you set up the service manually, you can leave this blank or add your own secure string.
+- **`WEBHOOK_SECRET`**: Render will create this for you automatically if you use the `render.yaml` file.
 
 That's it! The GitHub Action is already configured and will start running on its schedule.
 

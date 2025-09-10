@@ -4,11 +4,10 @@ import logging
 import asyncio
 import zipfile
 import tempfile
-import threading
 import time
 from http import HTTPStatus
 from typing import Dict, Any, List
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 import re
 
 from fastapi import FastAPI, Request, Response, HTTPException, Query
@@ -26,12 +25,12 @@ logger = logging.getLogger(__name__)
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "a-random-string")
 OWNER_ID = os.environ.get("OWNER_ID")
-DB_FILE = os.environ.get("DB_FILE", "db.json")
+DB_FILE = "db.json"
+SERIES_DB_FILE = "series_db.json"
 
 # --- Global Variables ---
 db: Dict[str, Any] = {}
 series_db: Dict[str, Dict[int, str]] = {}
-scraper_status = {"running": False, "progress": ""}
 
 # --- Menu Messages ---
 WELCOME_MESSAGE = """
@@ -131,22 +130,20 @@ def load_databases():
     """Load both main and series databases."""
     global db, series_db
     
-    # Load main database
     try:
         with open(DB_FILE, 'r', encoding='utf-8') as f:
             db = json.load(f)
             logger.info(f"Loaded main database: {len(db)} entries")
-    except Exception as e:
-        logger.error(f"Error loading main database: {e}")
+    except (FileNotFoundError, json.JSONDecodeError):
+        logger.warning(f"Could not load {DB_FILE}. Starting with an empty database.")
         db = {}
     
-    # Load series database
     try:
-        with open('series_db.json', 'r', encoding='utf-8') as f:
+        with open(SERIES_DB_FILE, 'r', encoding='utf-8') as f:
             series_db = json.load(f)
             logger.info(f"Loaded series database: {len(series_db)} series")
-    except Exception as e:
-        logger.warning(f"Series database not found: {e}")
+    except (FileNotFoundError, json.JSONDecodeError):
+        logger.warning(f"Could not load {SERIES_DB_FILE}.")
         series_db = {}
 
 def search_content(query: str) -> List[Dict]:
@@ -157,789 +154,326 @@ def search_content(query: str) -> List[Dict]:
     query_lower = query.lower().strip()
     results = []
     
-    # Direct IMDb ID search
-    if query_lower.startswith('tt') and query_lower[2:].isdigit():
-        if query_lower in db:
-            return [{'type': 'direct', 'imdb_id': query_lower, 'entry': db[query_lower]}]
-    
-    # Search in main database
-    for imdb_id, entry in db.items():
+    for unique_id, entry in db.items():
         title = entry.get('title', '').lower()
         series_name = entry.get('series_name', '').lower() if entry.get('series_name') else ''
         
-        # Check various fields for matches
         if (query_lower in title or
-            query_lower in series_name or
+            (series_name and query_lower in series_name) or
             any(word in title for word in query_lower.split()) or
             (series_name and any(word in series_name for word in query_lower.split()))):
             
             results.append({
                 'type': 'match',
-                'imdb_id': imdb_id,
+                'unique_id': unique_id,
                 'entry': entry,
                 'relevance': calculate_relevance(query_lower, title, series_name)
             })
     
-    # Sort by relevance
     results.sort(key=lambda x: x.get('relevance', 0), reverse=True)
-    return results[:20]  # Limit results
+    return results[:20]
 
 def calculate_relevance(query: str, title: str, series_name: str) -> int:
     """Calculate search relevance score."""
     score = 0
-    query_words = query.split()
-    
-    # Exact title match gets highest score
-    if query in title:
-        score += 100
-    if series_name and query in series_name:
-        score += 100
-    
-    # Word matches
-    for word in query_words:
-        if word in title:
-            score += 10
-        if series_name and word in series_name:
-            score += 10
-    
+    if query in title: score += 100
+    if series_name and query in series_name: score += 100
+    for word in query.split():
+        if word in title: score += 10
+        if series_name and word in series_name: score += 10
     return score
 
 def get_series_seasons(series_name: str) -> Dict[int, str]:
     """Get all seasons for a series."""
-    if not series_name:
+    if not series_name or not series_db:
         return {}
     
-    # Check series database first
-    if series_name in series_db:
-        return series_db[series_name]
-    
-    # Fallback to scanning main database
-    seasons = {}
-    for imdb_id, entry in db.items():
-        if (entry.get('is_series') and entry.get('series_name') and
-            entry['series_name'].lower() == series_name.lower()):
-            season_num = entry.get('season_number', 1)
-            seasons[season_num] = imdb_id
-    
-    return seasons
+    normalized_series_name = series_name.lower().strip()
+    for db_series_name, seasons in series_db.items():
+        if db_series_name.lower().strip() == normalized_series_name:
+            return seasons
+    return {}
 
 async def download_and_upload_subtitle(download_url: str, chat_id: str, title: str, source_url: str) -> bool:
     """Download subtitle file and upload to Telegram."""
-    if not download_url or not TOKEN:
-        logger.warning(f"Download aborted: Missing download_url or TOKEN for chat_id {chat_id}")
-        return False
-    
     import aiohttp
     import aiofiles
     
-    logger.info(f"[ChatID: {chat_id}] Starting download for '{title}' from URL: {download_url}")
+    logger.info(f"[ChatID: {chat_id}] Starting download for '{title}'")
 
     status_message_id = None
     try:
-        # Send initial message and store its ID
         status_message = await send_telegram_message({
-            'chat_id': chat_id,
-            'text': f"📥 Downloading subtitle for **{title}**...",
-            'parse_mode': 'Markdown'
+            'method': 'sendMessage', 'chat_id': chat_id,
+            'text': f"📥 Downloading subtitle for **{title}**...", 'parse_mode': 'Markdown'
         })
         if status_message and status_message.get('ok'):
             status_message_id = status_message['result']['message_id']
 
-        # Create temp directory
         with tempfile.TemporaryDirectory() as temp_dir:
-            logger.info(f"[ChatID: {chat_id}] Created temporary directory: {temp_dir}")
-
-            # Download file with proper headers
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Referer': 'https://malayalamsubtitles.org/'
             }
             
             async with aiohttp.ClientSession(headers=headers, timeout=aiohttp.ClientTimeout(total=60)) as session:
-                logger.info(f"[ChatID: {chat_id}] Attempting to GET download URL.")
                 async with session.get(download_url) as resp:
                     if resp.status != 200:
-                        error_body = await resp.text()
-                        logger.error(f"[ChatID: {chat_id}] Download failed with status {resp.status}. Response: {error_body[:200]}")
                         if status_message_id:
-                            await send_telegram_message({
-                                'method': 'editMessageText',
-                                'chat_id': chat_id,
-                                'message_id': status_message_id,
-                                'text': f"❌ Failed to download subtitle (Server returned HTTP {resp.status}). Please try again later."
-                            })
-                        return False # Keep the error message visible
-                    
-                    # Get filename from headers or URL
-                    filename = f"{title.replace(' ', '_')}.zip" # Default to zip
+                            await send_telegram_message({'method': 'editMessageText', 'chat_id': chat_id, 'message_id': status_message_id, 'text': f"❌ Failed to download (HTTP {resp.status})."})
+                        return False
+
+                    filename = f"{title.replace(' ', '_')}.zip"
                     if 'content-disposition' in resp.headers:
-                        cd = resp.headers['content-disposition']
-                        filename_match = re.search(r'filename\*?=(.+)', cd, re.IGNORECASE)
-                        if filename_match:
-                            raw_filename = filename_match.group(1).strip('"')
-                            if "''" in raw_filename:
-                                raw_filename = raw_filename.split("''")[-1]
-                            filename = raw_filename
-                    else:
-                        parsed_url = urlparse(download_url)
-                        url_filename = os.path.basename(parsed_url.path)
-                        if '.' in url_filename:
-                            filename = url_filename
+                        cd_match = re.search(r'filename\*?=(.+)', resp.headers['content-disposition'], re.IGNORECASE)
+                        if cd_match:
+                            raw_filename = cd_match.group(1).strip('"')
+                            filename = raw_filename.split("''")[-1] if "''" in raw_filename else raw_filename
                     
                     file_path = os.path.join(temp_dir, filename)
                     
-                    # Save file
-                    bytes_written = 0
                     async with aiofiles.open(file_path, 'wb') as f:
                         async for chunk in resp.content.iter_chunked(8192):
                             await f.write(chunk)
-                            bytes_written += len(chunk)
                     
-                    if bytes_written == 0:
-                        logger.warning(f"[ChatID: {chat_id}] Downloaded file is empty.")
-                        await send_telegram_message({'chat_id': chat_id, 'text': "❌ Downloaded file was empty."})
-                        return False
-
-                    logger.info(f"[ChatID: {chat_id}] File saved to {file_path}, size: {bytes_written} bytes.")
-                    
-                    # Update progress by editing the status message
                     if status_message_id:
-                        await send_telegram_message({
-                            'method': 'editMessageText',
-                            'chat_id': chat_id,
-                            'message_id': status_message_id,
-                            'text': f"📤 Uploading subtitle file(s)..."
-                        })
+                        await send_telegram_message({'method': 'editMessageText', 'chat_id': chat_id, 'message_id': status_message_id, 'text': "📤 Uploading..."})
                     
-                    # Process and upload the file
                     if filename.lower().endswith('.zip'):
-                        return await upload_zip_contents(file_path, chat_id, title, source_url)
+                        await upload_zip_contents(file_path, chat_id, source_url)
                     else:
-                        return await upload_single_file(file_path, chat_id, filename, source_url)
-    
-    except asyncio.TimeoutError:
-        logger.error(f"[ChatID: {chat_id}] Download timeout for {download_url}")
-        await send_telegram_message({
-            'chat_id': chat_id,
-            'text': "⏰ Download timed out. The server took too long to respond. Please try again later."
-        })
-        return False
+                        await upload_single_file(file_path, chat_id, filename, source_url)
     except Exception as e:
-        logger.exception(f"[ChatID: {chat_id}] An unexpected error occurred in download_and_upload_subtitle: {e}")
-        await send_telegram_message({
-            'chat_id': chat_id,
-            'text': f"❌ An unexpected error occurred. The admin has been notified."
-        })
-        return False
+        logger.exception(f"Error in download_and_upload_subtitle for chat {chat_id}")
+        await send_telegram_message({'chat_id': chat_id, 'text': "❌ An unexpected error occurred during download."})
     finally:
-        # Clean up the status message after a short delay
         if status_message_id:
-            await asyncio.sleep(5)
-            await send_telegram_message({
-                'method': 'deleteMessage',
-                'chat_id': chat_id,
-                'message_id': status_message_id
-            })
+            await asyncio.sleep(3)
+            await send_telegram_message({'method': 'deleteMessage', 'chat_id': chat_id, 'message_id': status_message_id})
 
-async def upload_zip_contents(zip_path: str, chat_id: str, title: str, source_url: str) -> bool:
-    """Extract and upload all files from zip."""
-    logger.info(f"[ChatID: {chat_id}] Processing zip file: {zip_path}")
+async def upload_zip_contents(zip_path: str, chat_id: str, source_url: str):
+    """Extracts and uploads all valid subtitle files from a zip archive."""
     try:
-        with tempfile.TemporaryDirectory() as extract_dir:
-            logger.info(f"[ChatID: {chat_id}] Extracting zip to {extract_dir}")
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(extract_dir)
+        with tempfile.TemporaryDirectory() as extract_dir, zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(extract_dir)
             
-            subtitle_files = []
-            for root, _, files in os.walk(extract_dir):
-                for file in files:
-                    if file.lower().endswith(('.srt', '.ass', '.ssa', '.vtt')):
-                        subtitle_files.append(os.path.join(root, file))
+            subtitle_files = [os.path.join(root, file) for root, _, files in os.walk(extract_dir) for file in files if file.lower().endswith(('.srt', '.ass', '.ssa', '.vtt'))]
             
             if not subtitle_files:
-                await send_telegram_message({'chat_id': chat_id, 'text': "🤷‍♂️ No subtitle files found in archive."})
-                return False
-            
+                await send_telegram_message({'chat_id': chat_id, 'text': "🤷 No subtitle files found in the archive."})
+                return
+
             for file_path in subtitle_files:
-                filename = os.path.basename(file_path)
-                await upload_single_file(file_path, chat_id, filename, source_url)
+                await upload_single_file(file_path, chat_id, os.path.basename(file_path), source_url)
                 await asyncio.sleep(1)
-            
-            await send_telegram_message({'chat_id': chat_id, 'text': f"✅ Uploaded {len(subtitle_files)} subtitle(s)."})
-            return True
-
-    except zipfile.BadZipFile:
-        logger.warning(f"[ChatID: {chat_id}] Bad zip file. Trying to upload directly.")
-        return await upload_single_file(zip_path, chat_id, os.path.basename(zip_path), source_url)
     except Exception as e:
-        logger.exception(f"[ChatID: {chat_id}] Error processing zip file: {e}")
-        await send_telegram_message({'chat_id': chat_id, 'text': "❌ An error occurred while processing the zip file."})
-        return False
+        logger.exception(f"Error processing zip file for chat {chat_id}")
+        await send_telegram_message({'chat_id': chat_id, 'text': "❌ Error processing zip file."})
 
-async def upload_single_file(file_path: str, chat_id: str, filename: str, source_url: str) -> bool:
-    """Upload single file to Telegram."""
+async def upload_single_file(file_path: str, chat_id: str, filename: str, source_url: str):
+    """Uploads a single file to Telegram."""
     import aiohttp
+    if not os.path.exists(file_path) or os.path.getsize(file_path) == 0: return
     
-    if not os.path.exists(file_path):
-        logger.error(f"[ChatID: {chat_id}] File not found for upload: {file_path}")
-        return False
-
-    file_size = os.path.getsize(file_path)
-    if file_size > 49 * 1024 * 1024:  # 49MB limit for safety
-        await send_telegram_message({'chat_id': chat_id, 'text': f"❌ File **{filename}** is too large."})
-        return False
-
     url = f"https://api.telegram.org/bot{TOKEN}/sendDocument"
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120)) as session:
             with open(file_path, 'rb') as f:
                 data = aiohttp.FormData()
-                data.add_field('chat_id', chat_id)
+                data.add_field('chat_id', str(chat_id))
                 data.add_field('document', f, filename=filename)
                 caption = f"[{filename}]({source_url})" if source_url else filename
                 data.add_field('caption', caption)
                 data.add_field('parse_mode', 'Markdown')
 
-                async with session.post(url, data=data) as resp:
-                    if resp.status != 200:
-                        error_text = await resp.text()
-                        logger.error(f"Upload failed: {resp.status} - {error_text}")
-                        return False
-                    return True
+                await session.post(url, data=data)
     except Exception as e:
-        logger.exception(f"Error uploading file: {e}")
-        return False
+        logger.exception(f"Error uploading file for chat {chat_id}")
 
 def create_menu_keyboard(current_menu: str) -> Dict:
-    """Create inline keyboard for menus with 2 buttons per row."""
-    keyboards = {
-        'home': [
-            [{'text': 'ℹ️ About', 'callback_data': 'menu_about'}, {'text': '🆘 Help', 'callback_data': 'menu_help'}],
-            [{'text': '📋 Terms of Service', 'callback_data': 'menu_tos'}, {'text': '❌ Close', 'callback_data': 'menu_close'}]
-        ],
-        'about': [
-            [{'text': '🏠 Home', 'callback_data': 'menu_home'}, {'text': '🆘 Help', 'callback_data': 'menu_help'}],
-            [{'text': '📋 Terms of Service', 'callback_data': 'menu_tos'}, {'text': '❌ Close', 'callback_data': 'menu_close'}]
-        ],
-        'help': [
-            [{'text': '🏠 Home', 'callback_data': 'menu_home'}, {'text': 'ℹ️ About', 'callback_data': 'menu_about'}],
-            [{'text': '📋 Terms of Service', 'callback_data': 'menu_tos'}, {'text': '❌ Close', 'callback_data': 'menu_close'}]
-        ],
-        'tos': [
-            [{'text': '🏠 Home', 'callback_data': 'menu_home'}, {'text': 'ℹ️ About', 'callback_data': 'menu_about'}],
-            [{'text': '🆘 Help', 'callback_data': 'menu_help'}, {'text': '❌ Close', 'callback_data': 'menu_close'}]
-        ]
-    }
-    
+    keyboards = {'home': [[{'text': 'ℹ️ About', 'callback_data': 'menu_about'}, {'text': '🆘 Help', 'callback_data': 'menu_help'}], [{'text': '📋 Terms of Service', 'callback_data': 'menu_tos'}, {'text': '❌ Close', 'callback_data': 'menu_close'}]]}
     return {'inline_keyboard': keyboards.get(current_menu, keyboards['home'])}
 
 def create_search_results_keyboard(results: List[Dict]) -> Dict:
-    """Create keyboard for search results."""
     keyboard = []
-    
-    for result in results[:10]:  # Limit to 10 results
+    for result in results[:10]:
         entry = result['entry']
-        title = entry.get('title', 'Unknown')[:45]  # Truncate long titles
-        
+        title = entry.get('title', 'Unknown')[:45]
         if entry.get('is_series'):
             title += f" (S{entry.get('season_number', 1)})"
-        
-        keyboard.append([{
-            'text': title,
-            'callback_data': f"view_{result['imdb_id']}"
-        }])
-    
+        keyboard.append([{'text': title, 'callback_data': f"v_{result['unique_id']}"}])
     keyboard.append([{'text': '❌ Close', 'callback_data': 'menu_close'}])
     return {'inline_keyboard': keyboard}
 
-def create_series_seasons_keyboard(seasons: Dict[int, str]) -> Dict:
-    """Create keyboard for series seasons."""
-    keyboard = []
-    
-    for season_num in sorted(seasons.keys()):
-        keyboard.append([{
-            'text': f'Season {season_num}',
-            'callback_data': f"view_{seasons[season_num]}"
-        }])
-    
-    keyboard.append([{'text': '❌ Close', 'callback_data': 'menu_close'}])
-    return {'inline_keyboard': keyboard}
-
-def format_movie_details(entry: Dict, imdb_id: str) -> str:
-    """Format movie/series details with proper field handling."""
+def format_movie_details(entry: Dict) -> str:
+    """Formats movie/series details with hyperlinks."""
     title = entry.get('title', 'Unknown Title')
     year = f" ({entry['year']})" if entry.get('year') else ""
-    
-    # Main title
     message = f"🎬 **{title}{year}**\n\n"
-    
-    # MSOne release number
     if entry.get('msone_release_number'):
         message += f"🆔 MSOne Release: `{entry['msone_release_number']}`\n\n"
     
-    # Movie details - each on separate line, use N/A for missing
-    details = []
-    
-    language = entry.get('language', 'N/A')
-    if language and language != 'Unknown':
-        details.append(f"🗣️ **Language:** {language}")
-    else:
-        details.append(f"🗣️ **Language:** N/A")
+    def format_field(data, prefix):
+        if not data or not data.get('name') or data['name'] == 'Unknown': return None
+        return f"{prefix} [{data['name']}]({data['url']})" if data.get('url') and data['url'].startswith('http') else f"{prefix} {data['name']}"
 
-    director = entry.get('director', 'N/A')
-    if director and director != 'Unknown':
-        details.append(f"🎬 **Director:** {director}")
-    else:
-        details.append(f"🎬 **Director:** N/A")
-
-    genre = entry.get('genre', 'N/A')
-    if genre and genre != 'Unknown':
-        details.append(f"🎭 **Genre:** {genre}")
-    else:
-        details.append(f"🎭 **Genre:** N/A")
-
-    rating = entry.get('imdb_rating', 'N/A')
-    if rating and rating != 'N/A':
-        details.append(f"⭐ **IMDb Rating:** {rating}")
-    else:
-        details.append(f"⭐ **IMDb Rating:** N/A")
-
-    cert = entry.get('certification', 'N/A')
-    if cert and cert != 'Not Rated':
-        details.append(f"🏷️ **Certification:** {cert}")
-    else:
-        details.append(f"🏷️ **Certification:** N/A")
+    details = [s for s in [
+        format_field(entry.get('language'), "🗣️ **Language:**"),
+        format_field(entry.get('director'), "🎬 **Director:**"),
+        format_field(entry.get('genre'), "🎭 **Genre:**"),
+        f"⭐ **IMDb Rating:** {entry['imdb_rating']}" if entry.get('imdb_rating') and entry['imdb_rating'] != 'N/A' else None,
+        f"🏷️ **Certification:** {entry['certification']}" if entry.get('certification') and entry['certification'] != 'Not Rated' else None,
+        format_field(entry.get('translatedBy'), "🌐 **Translator:**"),
+        format_field(entry.get('poster_maker'), "🎨 **Poster by:**")
+    ] if s]
     
-    # Translator
-    translator = entry.get('translatedBy', {})
-    if translator and translator.get('name') and translator['name'] != 'Unknown':
-        details.append(f"🌐 **Translator:** {translator['name']}")
-    else:
-        details.append(f"🌐 **Translator:** N/A")
+    if details: message += "\n".join(details) + "\n\n"
     
-    message += "\n".join(details) + "\n\n"
-    
-    # Series information
     if entry.get('is_series'):
         message += f"📺 **Series Information:**\n"
-        if entry.get('season_number'):
-            message += f"• Season: {entry['season_number']}\n"
-        if entry.get('total_seasons'):
-            message += f"• Total Seasons Available: {entry['total_seasons']}\n"
+        if entry.get('season_number'): message += f"• Season: {entry['season_number']}\n"
+        if entry.get('total_seasons'): message += f"• Total Seasons Available: {entry['total_seasons']}\n"
         message += "\n"
     
-    # Full synopsis
-    synopsis = entry.get('descriptionMalayalam', '')
+    synopsis = entry.get('descriptionMalayalam')
     if synopsis and synopsis != 'No description available':
         message += f"📖 **Synopsis:**\n{synopsis}\n\n"
-    else:
-        message += f"📖 **Synopsis:** N/A\n\n"
     
-    return message
+    if entry.get('source_url'):
+        message += f"🔗 [Go to Subtitle Page]({entry['source_url']})"
 
-def create_detail_keyboard(entry: Dict, imdb_id: str) -> Dict:
-    """Create keyboard for movie detail page."""
+    return message.strip()
+
+def create_detail_keyboard(entry: Dict, unique_id: str) -> Dict:
     keyboard = []
-    
-    # Download button
     if entry.get('srtURL'):
-        keyboard.append([{
-            'text': '📥 Download Subtitle',
-            'callback_data': f"dl_{imdb_id}" # dl_ = download
-        }])
-    
-    # IMDb link
+        keyboard.append([{'text': '📥 Download Subtitle', 'callback_data': f"dl_{unique_id}"}])
     if entry.get('imdbURL'):
-        keyboard.append([{
-            'text': '🎬 View on IMDb',
-            'url': entry['imdbURL']
-        }])
-    
-    # Close button
-    keyboard.append([
-        {'text': '❌ Close', 'callback_data': 'menu_close'}
-    ])
-    
+        keyboard.append([{'text': '🎬 View on IMDb', 'url': entry['imdbURL']}])
+    keyboard.append([{'text': '❌ Close', 'callback_data': 'menu_close'}])
     return {'inline_keyboard': keyboard}
 
-def start_scraper_background():
-    """Start scraper in background thread."""
-    def scraper_thread():
-        global scraper_status
-        try:
-            scraper_status["running"] = True
-            scraper_status["progress"] = "Starting scraper..."
+async def handle_callback_query(callback_data: str, message: dict) -> Dict:
+    """Handles all callback queries from inline keyboards."""
+    chat_id, message_id = message['chat']['id'], message['message_id']
+    method = 'editMessageText' # Default method
+    payload = {'chat_id': chat_id, 'message_id': message_id}
 
-            # Import and run scraper
-            from scraper import start_scraper
-            success = start_scraper()
+    if callback_data.startswith('menu_'):
+        action = callback_data.split('_')[1]
+        if action == 'close':
+            payload['method'] = 'deleteMessage'
+        else: # home, about, help, tos
+            payload.update({
+                'text': {'home': WELCOME_MESSAGE, 'about': ABOUT_MESSAGE, 'help': HELP_MESSAGE, 'tos': TOS_MESSAGE}[action],
+                'reply_markup': create_menu_keyboard(action), 'parse_mode': 'Markdown'
+            })
+    elif callback_data.startswith('v_'):
+        unique_id = callback_data.replace('v_', '')
+        if unique_id in db:
+            entry = db[unique_id]
+            payload.update({
+                'text': format_movie_details(entry),
+                'reply_markup': create_detail_keyboard(entry, unique_id),
+                'parse_mode': 'Markdown', 'disable_web_page_preview': True
+            })
+    elif callback_data.startswith('dl_'):
+        unique_id = callback_data.replace('dl_', '')
+        if unique_id in db:
+            entry = db[unique_id]
+            if entry.get('srtURL'):
+                asyncio.create_task(download_and_upload_subtitle(entry['srtURL'], chat_id, entry['title'], entry['source_url']))
+                return {'method': 'answerCallbackQuery', 'callback_query_id': message['id'], 'text': 'Download started!'}
+        return {'method': 'answerCallbackQuery', 'callback_query_id': message['id'], 'text': 'Download link not available.'}
 
-            scraper_status["running"] = False
-            if success:
-                scraper_status["progress"] = "Scraper completed successfully!"
-                # Reload databases
-                load_databases()
-            else:
-                scraper_status["progress"] = "Scraper failed!"
+    return payload
 
-        except Exception as e:
-            logger.error(f"Scraper thread error: {e}")
-            scraper_status["running"] = False
-            scraper_status["progress"] = f"Scraper error: {str(e)}"
+async def handle_message_text(message: dict) -> Dict:
+    """Handles incoming text messages (commands and searches)."""
+    text, chat_id, user_id = message['text'].strip(), message['chat']['id'], message['from']['id']
+    payload = {'chat_id': chat_id, 'parse_mode': 'Markdown'}
 
-    thread = threading.Thread(target=scraper_thread)
-    thread.daemon = True
-    thread.start()
-
-def stop_scraper_background():
-    """Stop scraper gracefully."""
-    try:
-        from scraper import stop_scraper
-        stop_scraper()
-        scraper_status["progress"] = "Stop signal sent to scraper..."
-    except Exception as e:
-        logger.error(f"Error stopping scraper: {e}")
-
-async def handle_callback_query(callback_data: str, message_data: dict, chat_id: str) -> Dict:
-    """Handle callback query from inline keyboards."""
-    try:
-        if callback_data.startswith('menu_'):
-            menu_type = callback_data.replace('menu_', '')
-            
-            if menu_type == 'home':
-                return {
-                    'method': 'editMessageText',
-                    'text': WELCOME_MESSAGE,
-                    'reply_markup': create_menu_keyboard('home'),
-                    'parse_mode': 'Markdown'
-                }
-            elif menu_type == 'about':
-                return {
-                    'method': 'editMessageText',
-                    'text': ABOUT_MESSAGE,
-                    'reply_markup': create_menu_keyboard('about'),
-                    'parse_mode': 'Markdown'
-                }
-            elif menu_type == 'help':
-                return {
-                    'method': 'editMessageText',
-                    'text': HELP_MESSAGE,
-                    'reply_markup': create_menu_keyboard('help'),
-                    'parse_mode': 'Markdown'
-                }
-            elif menu_type == 'tos':
-                return {
-                    'method': 'editMessageText',
-                    'text': TOS_MESSAGE,
-                    'reply_markup': create_menu_keyboard('tos'),
-                    'parse_mode': 'Markdown'
-                }
-            elif menu_type == 'close':
-                return {
-                    'method': 'deleteMessage'
-                }
-        
-        elif callback_data.startswith('scraper_'):
-            action = callback_data.replace('scraper_', '')
-
-            if action == 'start':
-                if scraper_status["running"]:
-                    return {
-                        'method': 'answerCallbackQuery',
-                        'text': 'Scraper is already running!',
-                        'show_alert': True
-                    }
-                else:
-                    start_scraper_background()
-                    return {
-                        'method': 'editMessageText',
-                        'text': f"🔄 **Scraper Started!**\n\nStatus: {scraper_status['progress']}\n\nThis may take several minutes...",
-                        'parse_mode': 'Markdown',
-                        'reply_markup': {
-                            'inline_keyboard': [
-                                [{'text': '⏹️ Stop Scraper', 'callback_data': 'scraper_stop'}],
-                                [{'text': '📊 Check Status', 'callback_data': 'scraper_status'}],
-                                [{'text': '❌ Close', 'callback_data': 'menu_close'}]
-                            ]
-                        }
-                    }
-            elif action == 'stop':
-                stop_scraper_background()
-                return {
-                    'method': 'answerCallbackQuery',
-                    'text': 'Stop signal sent to scraper.',
-                    'show_alert': True
-                }
-            elif action == 'status':
-                status_text = f"🔄 **Scraper Status**\n\n"
-                status_text += f"**Running:** {'Yes' if scraper_status['running'] else 'No'}\n"
-                status_text += f"**Progress:** {scraper_status['progress']}\n"
-                status_text += f"**Database Size:** {len(db)} entries"
-
-                return {
-                    'method': 'editMessageText',
-                    'text': status_text,
-                    'parse_mode': 'Markdown',
-                    'reply_markup': {
-                        'inline_keyboard': [
-                            [{'text': '▶️ Start Scraper', 'callback_data': 'scraper_start'}] if not scraper_status['running'] else [{'text': '⏹️ Stop Scraper', 'callback_data': 'scraper_stop'}],
-                            [{'text': '🔄 Refresh Status', 'callback_data': 'scraper_status'}],
-                            [{'text': '❌ Close', 'callback_data': 'menu_close'}]
-                        ]
-                    }
-                }
-
-        elif callback_data.startswith('view_'):
-            imdb_id = callback_data.replace('view_', '')
-            if imdb_id in db:
-                entry = db[imdb_id]
-                
-                # Format message
-                detail_text = format_movie_details(entry, imdb_id)
-                keyboard = create_detail_keyboard(entry, imdb_id)
-                
-                # Try to send with poster
-                poster_url = entry.get('posterMalayalam')
-                if poster_url:
-                    return {
-                        'method': 'editMessageMedia',
-                        'media': {
-                            'type': 'photo',
-                            'media': poster_url,
-                            'caption': detail_text,
-                            'parse_mode': 'Markdown'
-                        },
-                        'reply_markup': keyboard
-                    }
-                else:
-                    return {
-                        'method': 'editMessageText',
-                        'text': detail_text,
-                        'reply_markup': keyboard,
-                        'parse_mode': 'Markdown',
-                        'disable_web_page_preview': False
-                    }
-        
-        elif callback_data.startswith('dl_'):
-            imdb_id = callback_data.replace('dl_', '')
-            if imdb_id in db:
-                entry = db[imdb_id]
-                download_url = entry.get('srtURL')
-                
-                if download_url:
-                    # Start download in background
-                    asyncio.create_task(download_and_upload_subtitle(
-                        download_url,
-                        chat_id,
-                        entry.get('title', 'subtitle'),
-                        entry.get('source_url', '') # Pass source_url
-                    ))
-                    
-                    return {
-                        'method': 'answerCallbackQuery',
-                        'text': 'Download started! Please wait...',
-                        'show_alert': False
-                    }
-                else:
-                    return {
-                        'method': 'answerCallbackQuery',
-                        'text': 'Download link not available.',
-                        'show_alert': True
-                    }
-        
-        # Default response
-        return {
-            'method': 'answerCallbackQuery',
-            'text': 'Action completed.',
-            'show_alert': False
-        }
-        
-    except Exception as e:
-        logger.error(f"Error handling callback query: {e}")
-        return {
-            'method': 'answerCallbackQuery',
-            'text': 'An error occurred. Please try again.',
-            'show_alert': True
-        }
-
-async def handle_telegram_message(message_data: dict) -> Dict:
-    """Handle Telegram messages with enhanced features."""
-    try:
-        # Handle callback queries
-        if 'callback_query' in message_data:
-            callback = message_data['callback_query']
-            callback_data = callback.get('data', '')
-            chat_id = callback['message']['chat']['id']
-            message_id = callback['message']['message_id']
-            
-            response = await handle_callback_query(callback_data, callback['message'], str(chat_id))
-            if response:
-                response['chat_id'] = chat_id
-                response['message_id'] = message_id
-                return response
-            
-            return None
-        
-        # Handle regular messages
-        message = message_data.get('message', {})
-        text = message.get('text', '').strip()
-        chat_id = message.get('chat', {}).get('id')
-        user = message.get('from', {})
-        user_id = user.get('id')
-        
-        if not chat_id or not text:
-            return None
-        
-        logger.info(f"Message: '{text}' from {user.get('username', 'unknown')} ({user_id})")
-
-        # --- Handle Commands & Search ---
-        if text.startswith('/'):
-            command = text.split(' ')[0].lower()
-            if command == '/start':
-                return {
-                    'method': 'sendMessage',
-                    'chat_id': chat_id,
-                    'text': WELCOME_MESSAGE,
-                    'reply_markup': create_menu_keyboard('home'),
-                    'parse_mode': 'Markdown'
-                }
-            elif command == '/help':
-                 return {
-                    'method': 'sendMessage',
-                    'chat_id': chat_id,
-                    'text': HELP_MESSAGE,
-                    'reply_markup': create_menu_keyboard('help'),
-                    'parse_mode': 'Markdown'
-                }
-            elif command == '/about':
-                 return {
-                    'method': 'sendMessage',
-                    'chat_id': chat_id,
-                    'text': ABOUT_MESSAGE,
-                    'reply_markup': create_menu_keyboard('about'),
-                    'parse_mode': 'Markdown'
-                }
-            elif str(user_id) == OWNER_ID and command == '/broadcast':
-                broadcast_text = text.replace('/broadcast ', '')
-                # TODO: Implement broadcast functionality
-                return {
-                    'chat_id': chat_id,
-                    'text': f"Broadcast feature coming soon!\n\nMessage to broadcast: {broadcast_text}",
-                    'parse_mode': 'Markdown'
-                }
-            else:
-                return {
-                    'method': 'sendMessage',
-                    'chat_id': chat_id,
-                    'text': "🤔 Unrecognized command. Type a movie or series name to search."
-                }
+    if text.startswith('/'):
+        command = text.split(' ')[0].lower()
+        if command == '/start':
+            payload.update({'text': WELCOME_MESSAGE, 'reply_markup': create_menu_keyboard('home')})
+        elif command == '/help':
+            payload.update({'text': HELP_MESSAGE, 'reply_markup': create_menu_keyboard('help')})
+        elif command == '/about':
+            payload.update({'text': ABOUT_MESSAGE, 'reply_markup': create_menu_keyboard('about')})
         else:
-            # --- Handle Search Query ---
-            results = search_content(text)
-            if not results:
-                return {
-                    'method': 'sendMessage',
-                    'chat_id': chat_id,
-                    'text': f"🤷‍♀️ No subtitles found for **{text}**. Please check the spelling or try another name.",
-                    'parse_mode': 'Markdown'
-                }
-
-            return {
-                'method': 'sendMessage',
-                'chat_id': chat_id,
+            payload['text'] = "🤔 Unrecognized command."
+    else:
+        results = search_content(text)
+        if not results:
+            payload['text'] = f"🤷‍♀️ No subtitles found for **{text}**."
+        else:
+            payload.update({
                 'text': f"🔎 Found {len(results)} results for **{text}**:",
-                'reply_markup': create_search_results_keyboard(results),
-                'parse_mode': 'Markdown'
-            }
+                'reply_markup': create_search_results_keyboard(results)
+            })
+    return payload
 
+async def telegram_webhook_handler(request: Request):
+    """Main webhook endpoint to receive and handle all updates from Telegram."""
+    try:
+        data = await request.json()
+        response_payload = None
+        if 'callback_query' in data:
+            response_payload = await handle_callback_query(data['callback_query']['data'], data['callback_query'])
+        elif 'message' in data and 'text' in data['message']:
+            response_payload = await handle_message_text(data['message'])
+        
+        if response_payload:
+            await send_telegram_message(response_payload)
+            
     except Exception as e:
-        logger.error(f"Error handling telegram message: {e}")
-        return None
+        logger.exception("Error processing webhook")
+
+    return Response(status_code=HTTPStatus.OK)
 
 # --- Telegram API Communication ---
 async def send_telegram_message(payload: Dict):
-    """Send a message to the Telegram API."""
+    """Sends a message to the Telegram API."""
     import aiohttp
-
-    # The method (e.g., sendMessage, deleteMessage) is part of the URL, not the payload
     method = payload.pop('method', 'sendMessage')
     url = f"https://api.telegram.org/bot{TOKEN}/{method}"
-
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload) as response:
                 if response.status != 200:
                     error_text = await response.text()
                     logger.error(f"Telegram API error for method {method}: {response.status} - {error_text}")
-                return await response.json()
     except Exception as e:
         logger.error(f"Error sending message to Telegram: {e}")
-    return None
 
-# --- FastAPI Application Events ---
+# --- FastAPI Application Events & Routes ---
 @app.on_event("startup")
 async def startup_event():
     """On startup, load DB, set webhook, and notify owner."""
     load_databases()
-
     webhook_url = os.environ.get("RENDER_EXTERNAL_URL")
     if webhook_url and TOKEN:
-        webhook_url += "/telegram"
-        payload = {
-            'url': webhook_url,
-            'secret_token': WEBHOOK_SECRET
-        }
-        logger.info(f"Setting webhook to: {webhook_url}")
-        # Use a raw request to set the webhook
-        import requests
-        url = f"https://api.telegram.org/bot{TOKEN}/setWebhook"
-        response = requests.post(url, data=payload)
-        if response.status_code == 200:
-            logger.info("Webhook set successfully!")
-        else:
-            logger.error(f"Failed to set webhook: {response.status_code} - {response.text}")
-
-        # Notify owner if ID is set
+        webhook_url_path = f"{webhook_url}/telegram"
+        payload = {'url': webhook_url_path, 'secret_token': WEBHOOK_SECRET}
+        logger.info(f"Setting webhook to: {webhook_url_path}")
+        async with aiohttp.ClientSession() as session:
+            await session.post(f"https://api.telegram.org/bot{TOKEN}/setWebhook", data=payload)
         if OWNER_ID:
-            await send_telegram_message({
-                'chat_id': OWNER_ID,
-                'text': '✅ **Bot is up and running!**',
-                'parse_mode': 'Markdown'
-            })
+            await send_telegram_message({'chat_id': OWNER_ID, 'text': '✅ Bot is up and running!'})
 
-@app.get("/")
+@app.get("/", include_in_schema=False)
 def read_root():
-    """A simple endpoint to confirm the bot is online."""
     return {"status": "ok", "message": "Subtitle Search Bot is running"}
 
-@app.get("/healthz")
+@app.get("/healthz", include_in_schema=False)
 def health_check():
-    """Health check endpoint for Render."""
     return {"status": "ok"}
 
-@app.post("/telegram")
-async def telegram_webhook(request: Request):
-    """Main webhook endpoint to receive updates from Telegram."""
-    # Verify secret token
-    if request.headers.get("X-Telegram-Bot-Api-Secret-Token") != WEBHOOK_SECRET:
-        logger.warning("Invalid secret token received")
-        return Response(status_code=HTTPStatus.FORBIDDEN)
-
-    try:
-        data = await request.json()
-        response_payload = await handle_telegram_message(data)
-
-        if response_payload:
-            await send_telegram_message(response_payload)
-
-    except json.JSONDecodeError:
-        logger.error("Failed to decode JSON from Telegram request")
-        return Response(status_code=HTTPStatus.BAD_REQUEST)
-
-    return Response(status_code=HTTPStatus.OK)
+app.add_api_route("/telegram", telegram_webhook_handler, methods=["POST"], include_in_schema=False)
 
 @app.get("/api/subtitles")
-def api_search(query: str = Query(..., min_length=1)):
+def api_search(q: str = Query(..., min_length=1)):
     """REST API endpoint for searching subtitles."""
-    results = search_content(query)
-    return {"query": query, "results": results}
+    results = search_content(q)
+    return {"query": q, "results": results}
