@@ -5,6 +5,8 @@ import asyncio
 import zipfile
 import tempfile
 import time
+import aiohttp
+import requests
 from http import HTTPStatus
 from typing import Dict, Any, List
 from urllib.parse import urlparse, urljoin
