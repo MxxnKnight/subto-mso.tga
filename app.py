@@ -355,9 +355,13 @@ def create_detail_keyboard(entry: Dict, unique_id: str) -> Dict:
     keyboard.append([{'text': '❌ Close', 'callback_data': 'menu_close'}])
     return {'inline_keyboard': keyboard}
 
-async def handle_callback_query(callback_data: str, message: dict) -> Dict:
+async def handle_callback_query(callback_data: str, callback_query: dict) -> Dict:
     """Handles all callback queries from inline keyboards."""
-    chat_id, message_id = message['chat']['id'], message['message_id']
+    message = callback_query.get('message', {})
+    chat_id, message_id = message.get('chat', {}).get('id'), message.get('message_id')
+    if not chat_id or not message_id:
+        return {'method': 'answerCallbackQuery', 'callback_query_id': callback_query['id'], 'text': 'Error: Could not identify chat.'}
+
     method = 'editMessageText' # Default method
     payload = {'chat_id': chat_id, 'message_id': message_id}
 
