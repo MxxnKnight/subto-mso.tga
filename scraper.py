@@ -49,7 +49,6 @@ def extract_season_info(title):
 
 def scrape_detail_page(url):
     """Scrapes comprehensive details from a movie/series page."""
-    logger.info(f"Scraping detail page: {url}")
     soup = get_soup(url)
     if not soup: return None
 
@@ -104,7 +103,7 @@ def scrape_detail_page(url):
         
         return details
     except Exception as e:
-        logger.exception(f"Error scraping detail page {url}: {e}")
+        logger.exception(f"Error scraping detail page {url}")
         return None
 
 def main():
@@ -112,12 +111,11 @@ def main():
     logger.info("Starting Malayalam subtitle scraper...")
 
     try:
-        with open('db.json', 'r', encoding='utf-8') as f:
-            final_db = json.load(f)
+        with open('db.json', 'r', encoding='utf-8') as f: final_db = json.load(f)
         logger.info(f"Loaded {len(final_db)} existing entries from db.json")
     except (FileNotFoundError, json.JSONDecodeError):
         final_db = {}
-        logger.info("No existing db.json found or it's invalid. Starting fresh.")
+        logger.info("No existing db.json found. Starting fresh.")
 
     current_page_url = RELEASES_URL
     newly_added_count = 0
@@ -140,9 +138,7 @@ def main():
             if not post_details: continue
 
             imdb_id = extract_imdb_id(post_details.get('imdbURL'))
-            if not imdb_id:
-                logger.warning(f"Skipping entry with no IMDb ID: {post_details.get('title')}")
-                continue
+            if not imdb_id: continue
 
             unique_id = f"{imdb_id}-S{post_details['season_number']}" if post_details.get('is_series') else imdb_id
 
@@ -152,43 +148,39 @@ def main():
                 new_on_this_page += 1
                 logger.info(f"NEW: {post_details['title']} ({unique_id})")
 
-            time.sleep(0.2)
+            time.sleep(0.1)
 
         if new_on_this_page == 0 and page_num > 5:
-             logger.info(f"Stopping early on page {page_num}: No new entries found.")
+             logger.info("Stopping early: No new entries found.")
              break
 
         next_page_tag = list_soup.select_one('a.next.page-numbers')
         if next_page_tag and next_page_tag.get('href'):
             current_page_url = urljoin(BASE_URL, next_page_tag['href'])
         else:
-            logger.info("No next page found, stopping.")
+            logger.info("No next page found.")
             break
-        time.sleep(0.5)
+        time.sleep(0.2)
 
-    logger.info(f"Scraping finished. Added {newly_added_count} new entries.")
-    logger.info(f"Total entries in database: {len(final_db)}")
+    logger.info(f"Scraping finished. Added {newly_added_count} new entries. Total: {len(final_db)}")
 
     series_db = {}
     for unique_id, entry in final_db.items():
         if entry.get('is_series') and entry.get('series_name'):
             series_name = entry['series_name']
-            if series_name not in series_db:
-                series_db[series_name] = {}
+            if series_name not in series_db: series_db[series_name] = {}
             season_num = entry.get('season_number', 1)
             series_db[series_name][season_num] = unique_id
             entry['total_seasons'] = len(series_db[series_name])
 
     try:
         if os.path.exists('db.json'): os.rename('db.json', 'db.json.backup')
-        with open('db.json', 'w', encoding='utf-8') as f:
-            json.dump(final_db, f, ensure_ascii=False, indent=2)
+        with open('db.json', 'w', encoding='utf-8') as f: json.dump(final_db, f, ensure_ascii=False, indent=2)
         
         if os.path.exists('series_db.json'): os.rename('series_db.json', 'series_db.json.backup')
-        with open('series_db.json', 'w', encoding='utf-8') as f:
-            json.dump(series_db, f, ensure_ascii=False, indent=2)
+        with open('series_db.json', 'w', encoding='utf-8') as f: json.dump(series_db, f, ensure_ascii=False, indent=2)
         
-        logger.info(f"Successfully created db.json and series_db.json")
+        logger.info("Successfully saved db.json and series_db.json")
     except Exception as e:
         logger.error(f"Error writing database: {e}")
 
