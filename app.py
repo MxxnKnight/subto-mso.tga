@@ -222,7 +222,7 @@ def get_series_seasons(series_name: str) -> Dict[int, str]:
     
     return seasons
 
-async def download_and_upload_subtitle(download_url: str, chat_id: str, title: str) -> bool:
+async def download_and_upload_subtitle(download_url: str, chat_id: str, title: str, source_url: str) -> bool:
     """Download subtitle file and upload to Telegram."""
     if not download_url or not TOKEN:
         logger.warning(f"Download aborted: Missing download_url or TOKEN for chat_id {chat_id}")
@@ -233,14 +233,17 @@ async def download_and_upload_subtitle(download_url: str, chat_id: str, title: s
     
     logger.info(f"[ChatID: {chat_id}] Starting download for '{title}' from URL: {download_url}")
 
+    status_message_id = None
     try:
-        # Send initial message
-        await send_telegram_message({
+        # Send initial message and store its ID
+        status_message = await send_telegram_message({
             'chat_id': chat_id,
             'text': f"📥 Downloading subtitle for **{title}**...",
             'parse_mode': 'Markdown'
         })
-        
+        if status_message and status_message.get('ok'):
+            status_message_id = status_message['result']['message_id']
+
         # Create temp directory
         with tempfile.TemporaryDirectory() as temp_dir:
             logger.info(f"[ChatID: {chat_id}] Created temporary directory: {temp_dir}")
@@ -254,35 +257,32 @@ async def download_and_upload_subtitle(download_url: str, chat_id: str, title: s
             async with aiohttp.ClientSession(headers=headers, timeout=aiohttp.ClientTimeout(total=60)) as session:
                 logger.info(f"[ChatID: {chat_id}] Attempting to GET download URL.")
                 async with session.get(download_url) as resp:
-                    logger.info(f"[ChatID: {chat_id}] Received response with status: {resp.status}")
                     if resp.status != 200:
                         error_body = await resp.text()
                         logger.error(f"[ChatID: {chat_id}] Download failed with status {resp.status}. Response: {error_body[:200]}")
                         await send_telegram_message({
+                            'method': 'editMessageText',
                             'chat_id': chat_id,
+                            'message_id': status_message_id,
                             'text': f"❌ Failed to download subtitle (Server returned HTTP {resp.status}). Please try again later."
                         })
-                        return False
+                        return False # Keep the error message visible
                     
                     # Get filename from headers or URL
-                    filename = f"{title.replace(' ', '_')}.zip" # Default to zip as it's common
+                    filename = f"{title.replace(' ', '_')}.zip" # Default to zip
                     if 'content-disposition' in resp.headers:
                         cd = resp.headers['content-disposition']
                         filename_match = re.search(r'filename\*?=(.+)', cd, re.IGNORECASE)
                         if filename_match:
                             raw_filename = filename_match.group(1).strip('"')
-                            # Handle URL encoding e.g. UTF-8''filename.zip
                             if "''" in raw_filename:
                                 raw_filename = raw_filename.split("''")[-1]
                             filename = raw_filename
-                        logger.info(f"[ChatID: {chat_id}] Filename from headers: {filename}")
                     else:
                         parsed_url = urlparse(download_url)
                         url_filename = os.path.basename(parsed_url.path)
                         if '.' in url_filename:
                             filename = url_filename
-                        logger.info(f"[ChatID: {chat_id}] Filename from URL: {filename}")
-
                     
                     file_path = os.path.join(temp_dir, filename)
                     
@@ -300,19 +300,20 @@ async def download_and_upload_subtitle(download_url: str, chat_id: str, title: s
 
                     logger.info(f"[ChatID: {chat_id}] File saved to {file_path}, size: {bytes_written} bytes.")
                     
-                    # Update progress
-                    await send_telegram_message({
-                        'chat_id': chat_id,
-                        'text': f"📤 Uploading subtitle file(s)..."
-                    })
+                    # Update progress by editing the status message
+                    if status_message_id:
+                        await send_telegram_message({
+                            'method': 'editMessageText',
+                            'chat_id': chat_id,
+                            'message_id': status_message_id,
+                            'text': f"📤 Uploading subtitle file(s)..."
+                        })
                     
-                    # Check if it's a zip file
+                    # Process and upload the file
                     if filename.lower().endswith('.zip'):
-                        logger.info(f"[ChatID: {chat_id}] Detected zip file. Processing with upload_zip_contents.")
-                        return await upload_zip_contents(file_path, chat_id, title)
+                        return await upload_zip_contents(file_path, chat_id, title, source_url)
                     else:
-                        logger.info(f"[ChatID: {chat_id}] Detected single file. Processing with upload_single_file.")
-                        return await upload_single_file(file_path, chat_id, filename)
+                        return await upload_single_file(file_path, chat_id, filename, source_url)
     
     except asyncio.TimeoutError:
         logger.error(f"[ChatID: {chat_id}] Download timeout for {download_url}")
@@ -328,8 +329,17 @@ async def download_and_upload_subtitle(download_url: str, chat_id: str, title: s
             'text': f"❌ An unexpected error occurred. The admin has been notified."
         })
         return False
+    finally:
+        # Clean up the status message after a short delay
+        if status_message_id:
+            await asyncio.sleep(5)
+            await send_telegram_message({
+                'method': 'deleteMessage',
+                'chat_id': chat_id,
+                'message_id': status_message_id
+            })
 
-async def upload_zip_contents(zip_path: str, chat_id: str, title: str) -> bool:
+async def upload_zip_contents(zip_path: str, chat_id: str, title: str, source_url: str) -> bool:
     """Extract and upload all files from zip."""
     logger.info(f"[ChatID: {chat_id}] Processing zip file: {zip_path}")
     try:
@@ -358,7 +368,7 @@ async def upload_zip_contents(zip_path: str, chat_id: str, title: str) -> bool:
             uploaded_count = 0
             for file_path in subtitle_files:
                 filename = os.path.basename(file_path)
-                if await upload_single_file(file_path, chat_id, filename):
+                if await upload_single_file(file_path, chat_id, filename, source_url):
                     uploaded_count += 1
                 else:
                     logger.warning(f"[ChatID: {chat_id}] Failed to upload {filename} from zip.")
@@ -378,13 +388,13 @@ async def upload_zip_contents(zip_path: str, chat_id: str, title: str) -> bool:
         logger.error(f"[ChatID: {chat_id}] The downloaded file is not a valid zip archive.")
         await send_telegram_message({'chat_id': chat_id, 'text': "❌ The downloaded file was corrupted or not a valid zip file."})
         # Fallback: try to upload the file directly
-        return await upload_single_file(zip_path, chat_id, os.path.basename(zip_path))
+        return await upload_single_file(zip_path, chat_id, os.path.basename(zip_path), source_url)
     except Exception as e:
         logger.exception(f"[ChatID: {chat_id}] Error processing zip file: {e}")
         await send_telegram_message({'chat_id': chat_id, 'text': "❌ An error occurred while processing the zip file."})
         return False
 
-async def upload_single_file(file_path: str, chat_id: str, filename: str) -> bool:
+async def upload_single_file(file_path: str, chat_id: str, filename: str, source_url: str) -> bool:
     """Upload single file to Telegram."""
     import aiohttp
     
@@ -412,9 +422,13 @@ async def upload_single_file(file_path: str, chat_id: str, filename: str) -> boo
                 data = aiohttp.FormData()
                 data.add_field('chat_id', chat_id)
                 data.add_field('document', f, filename=filename)
-                data.add_field('caption', f' subtitles')
                 
-                logger.info(f"[ChatID: {chat_id}] Posting file to Telegram API.")
+                # Create hyperlinked caption
+                caption = f"[{filename}]({source_url})" if source_url else filename
+                data.add_field('caption', caption)
+                data.add_field('parse_mode', 'Markdown')
+
+                logger.info(f"[ChatID: {chat_id}] Posting file to Telegram API with caption: {caption}")
                 async with session.post(url, data=data) as resp:
                     success = resp.status == 200
                     if not success:
@@ -451,10 +465,19 @@ def create_menu_keyboard(current_menu: str) -> Dict:
     
     return {'inline_keyboard': keyboards.get(current_menu, keyboards['home'])}
 
-def create_search_results_keyboard(results: List[Dict]) -> Dict:
+def create_search_results_keyboard(results: List[Dict], query: str) -> Dict:
     """Create keyboard for search results."""
     keyboard = []
     
+    # --- Check if it's a series search ---
+    series_names = {r['entry']['series_name'] for r in results if r['entry'].get('is_series') and r['entry'].get('series_name')}
+    if len(series_names) == 1:
+        series_name = series_names.pop()
+        keyboard.append([{
+            'text': f"📺 View All Seasons for {series_name}",
+            'callback_data': f"vs_{series_name[:35]}" # vs = view_series
+        }])
+
     for result in results[:10]:  # Limit to 10 results
         entry = result['entry']
         title = entry.get('title', 'Unknown')[:45]  # Truncate long titles
@@ -464,27 +487,49 @@ def create_search_results_keyboard(results: List[Dict]) -> Dict:
         
         keyboard.append([{
             'text': title,
-            'callback_data': f"view_{result['imdb_id']}"
+            'callback_data': f"v_{result['imdb_id']}_{query[:30]}" # v_ = view
         }])
     
     keyboard.append([{'text': '❌ Close', 'callback_data': 'menu_close'}])
     return {'inline_keyboard': keyboard}
 
-def create_series_seasons_keyboard(seasons: Dict[int, str]) -> Dict:
-    """Create keyboard for series seasons."""
+def create_series_seasons_keyboard(seasons: Dict[int, str], series_name: str, page: int = 1) -> Dict:
+    """Create a paginated keyboard for series seasons."""
+    PAGE_SIZE = 10
+    
+    sorted_seasons = sorted(seasons.items())
+    start_index = (page - 1) * PAGE_SIZE
+    end_index = start_index + PAGE_SIZE
+
+    paginated_seasons = sorted_seasons[start_index:end_index]
+    
     keyboard = []
-    
-    for season_num in sorted(seasons.keys()):
-        keyboard.append([{
-            'text': f'Season {season_num}',
-            'callback_data': f"view_{seasons[season_num]}"
-        }])
-    
+    # Create a 2-column layout for season buttons
+    row = []
+    for season_num, imdb_id in paginated_seasons:
+        row.append({'text': f'S{season_num}', 'callback_data': f"view_{imdb_id}"})
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+
+    # --- Pagination Controls ---
+    nav_row = []
+    if start_index > 0:
+        nav_row.append({'text': '⬅️ Back', 'callback_data': f'sp_{page-1}_{series_name[:30]}'})
+
+    if end_index < len(sorted_seasons):
+        nav_row.append({'text': 'Next ➡️', 'callback_data': f'sp_{page+1}_{series_name[:30]}'})
+
+    if nav_row:
+        keyboard.append(nav_row)
+
     keyboard.append([{'text': '❌ Close', 'callback_data': 'menu_close'}])
     return {'inline_keyboard': keyboard}
 
 def format_movie_details(entry: Dict, imdb_id: str) -> str:
-    """Format movie/series details with proper field handling."""
+    """Format movie/series details with proper field handling and hyperlinks."""
     title = entry.get('title', 'Unknown Title')
     year = f" ({entry['year']})" if entry.get('year') else ""
     
@@ -495,47 +540,48 @@ def format_movie_details(entry: Dict, imdb_id: str) -> str:
     if entry.get('msone_release_number'):
         message += f"🆔 MSOne Release: `{entry['msone_release_number']}`\n\n"
     
-    # Movie details - each on separate line, use N/A for missing
+    # --- Helper to format a field with an optional link ---
+    def format_field(data, prefix):
+        if not data or not data.get('name') or data['name'] == 'Unknown':
+            return None
+        if data.get('url'):
+            return f"{prefix} [{data['name']}]({data['url']})"
+        return f"{prefix} {data['name']}"
+
     details = []
     
-    language = entry.get('language', 'N/A')
-    if language and language != 'Unknown':
-        details.append(f"🗣️ **Language:** {language}")
-    else:
-        details.append(f"🗣️ **Language:** N/A")
-    
-    director = entry.get('director', 'N/A')
-    if director and director != 'Unknown':
-        details.append(f"🎬 **Director:** {director}")
-    else:
-        details.append(f"🎬 **Director:** N/A")
-    
-    genre = entry.get('genre', 'N/A')
-    if genre and genre != 'Unknown':
-        details.append(f"🎭 **Genre:** {genre}")
-    else:
-        details.append(f"🎭 **Genre:** N/A")
-    
-    rating = entry.get('imdb_rating', 'N/A')
+    # Language
+    lang_str = format_field(entry.get('language'), "🗣️ **Language:**")
+    if lang_str: details.append(lang_str)
+
+    # Director
+    director_str = format_field(entry.get('director'), "🎬 **Director:**")
+    if director_str: details.append(director_str)
+
+    # Genre
+    genre_str = format_field(entry.get('genre'), "🎭 **Genre:**")
+    if genre_str: details.append(genre_str)
+
+    # Rating
+    rating = entry.get('imdb_rating')
     if rating and rating != 'N/A':
         details.append(f"⭐ **IMDb Rating:** {rating}")
-    else:
-        details.append(f"⭐ **IMDb Rating:** N/A")
-    
-    cert = entry.get('certification', 'N/A')
+
+    # Certification
+    cert = entry.get('certification')
     if cert and cert != 'Not Rated':
         details.append(f"🏷️ **Certification:** {cert}")
-    else:
-        details.append(f"🏷️ **Certification:** N/A")
     
     # Translator
-    translator = entry.get('translatedBy', {})
-    if translator and translator.get('name') and translator['name'] != 'Unknown':
-        details.append(f"🌐 **Translator:** {translator['name']}")
-    else:
-        details.append(f"🌐 **Translator:** N/A")
+    translator_str = format_field(entry.get('translatedBy'), "🌐 **Translator:**")
+    if translator_str: details.append(translator_str)
     
-    message += "\n".join(details) + "\n\n"
+    # Poster Maker
+    poster_maker_str = format_field(entry.get('poster_maker'), "🎨 **Poster by:**")
+    if poster_maker_str: details.append(poster_maker_str)
+
+    if details:
+        message += "\n".join(details) + "\n\n"
     
     # Series information
     if entry.get('is_series'):
@@ -547,15 +593,17 @@ def format_movie_details(entry: Dict, imdb_id: str) -> str:
         message += "\n"
     
     # Full synopsis
-    synopsis = entry.get('descriptionMalayalam', '')
+    synopsis = entry.get('descriptionMalayalam')
     if synopsis and synopsis != 'No description available':
         message += f"📖 **Synopsis:**\n{synopsis}\n\n"
-    else:
-        message += f"📖 **Synopsis:** N/A\n\n"
     
+    # Source URL
+    if entry.get('source_url'):
+        message += f"[Source]({entry['source_url']})"
+
     return message
 
-def create_detail_keyboard(entry: Dict, imdb_id: str) -> Dict:
+def create_detail_keyboard(entry: Dict, imdb_id: str, query: str) -> Dict:
     """Create keyboard for movie detail page."""
     keyboard = []
     
@@ -563,7 +611,7 @@ def create_detail_keyboard(entry: Dict, imdb_id: str) -> Dict:
     if entry.get('srtURL'):
         keyboard.append([{
             'text': '📥 Download Subtitle',
-            'callback_data': f"download_{imdb_id}"
+            'callback_data': f"dl_{imdb_id}" # dl_ = download
         }])
     
     # IMDb link
@@ -574,8 +622,9 @@ def create_detail_keyboard(entry: Dict, imdb_id: str) -> Dict:
         }])
     
     # Back and close buttons
+    back_button_data = f"bs_{query}" if query else "menu_home"
     keyboard.append([
-        {'text': '🔙 Back to Search', 'callback_data': 'back_search'},
+        {'text': '🔙 Back to Search', 'callback_data': back_button_data},
         {'text': '❌ Close', 'callback_data': 'menu_close'}
     ])
     
@@ -620,14 +669,17 @@ async def handle_callback_query(callback_data: str, message_data: dict, chat_id:
                     'method': 'deleteMessage'
                 }
         
-        elif callback_data.startswith('view_'):
-            imdb_id = callback_data.replace('view_', '')
+        elif callback_data.startswith('v_'):
+            parts = callback_data.split('_')
+            imdb_id = parts[1]
+            query = "_".join(parts[2:])
+
             if imdb_id in db:
                 entry = db[imdb_id]
                 
                 # Format message
                 detail_text = format_movie_details(entry, imdb_id)
-                keyboard = create_detail_keyboard(entry, imdb_id)
+                keyboard = create_detail_keyboard(entry, imdb_id, query)
                 
                 # Try to send with poster
                 poster_url = entry.get('posterMalayalam')
@@ -648,11 +700,11 @@ async def handle_callback_query(callback_data: str, message_data: dict, chat_id:
                         'text': detail_text,
                         'reply_markup': keyboard,
                         'parse_mode': 'Markdown',
-                        'disable_web_page_preview': False
+                        'disable_web_page_preview': True
                     }
         
-        elif callback_data.startswith('download_'):
-            imdb_id = callback_data.replace('download_', '')
+        elif callback_data.startswith('dl_'):
+            imdb_id = callback_data.replace('dl_', '')
             if imdb_id in db:
                 entry = db[imdb_id]
                 download_url = entry.get('srtURL')
@@ -660,9 +712,10 @@ async def handle_callback_query(callback_data: str, message_data: dict, chat_id:
                 if download_url:
                     # Start download in background
                     asyncio.create_task(download_and_upload_subtitle(
-                        download_url, 
-                        chat_id, 
-                        entry.get('title', 'subtitle')
+                        download_url,
+                        chat_id,
+                        entry.get('title', 'subtitle'),
+                        entry.get('source_url')
                     ))
                     
                     return {
@@ -677,6 +730,39 @@ async def handle_callback_query(callback_data: str, message_data: dict, chat_id:
                         'show_alert': True
                     }
         
+        elif callback_data.startswith('vs_'):
+            series_name = callback_data.replace('vs_', '')
+            seasons = get_series_seasons(series_name)
+            if not seasons:
+                return {
+                    'method': 'answerCallbackQuery',
+                    'text': 'Could not find seasons for this series.',
+                    'show_alert': True
+                }
+
+            keyboard = create_series_seasons_keyboard(seasons, series_name, page=1)
+            return {
+                'method': 'editMessageText',
+                'text': f"📺 Seasons for **{series_name}**:",
+                'reply_markup': keyboard,
+                'parse_mode': 'Markdown'
+            }
+
+        elif callback_data.startswith('sp_'):
+            parts = callback_data.split('_')
+            page = int(parts[1])
+            series_name = "_".join(parts[2:])
+
+            seasons = get_series_seasons(series_name)
+            keyboard = create_series_seasons_keyboard(seasons, series_name, page=page)
+
+            return {
+                'method': 'editMessageText',
+                'text': f"📺 Seasons for **{series_name}** (Page {page}):",
+                'reply_markup': keyboard,
+                'parse_mode': 'Markdown'
+            }
+
         elif callback_data == 'back_search':
             # If the original message had a photo, we must edit the caption.
             # Otherwise, we can edit the text. This avoids a Telegram API error.
@@ -796,7 +882,7 @@ async def handle_telegram_message(message_data: dict) -> Dict:
                 'method': 'sendMessage',
                 'chat_id': chat_id,
                 'text': f"🔎 Found {len(results)} results for **{text}**:",
-                'reply_markup': create_search_results_keyboard(results),
+                'reply_markup': create_search_results_keyboard(results, text),
                 'parse_mode': 'Markdown'
             }
 

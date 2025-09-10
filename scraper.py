@@ -154,50 +154,73 @@ def scrape_detail_page(url):
         imdb_tag = soup.select_one('a#imdb-button') or soup.select_one('a[href*="imdb.com"]')
         details['imdbURL'] = imdb_tag['href'] if imdb_tag else None
         
-        # Parse release details table
+        # A more robust way to parse the details table
         details_table = soup.select_one('#release-details-table tbody')
         if details_table:
+            # First, parse all rows into a dictionary
+            table_data = {}
             rows = details_table.select('tr')
-            
             for row in rows:
                 cells = row.select('td')
                 if len(cells) >= 2:
-                    # Clean the label thoroughly for stricter matching
                     label = clean_text(cells[0].get_text()).lower().strip().replace(':', '')
-                    value = clean_text(cells[1].get_text())
-                    
-                    if label == 'language' or label == 'ഭാഷ':
-                        details['language'] = value
-                    elif label == 'director' or label == 'സംവിധായകൻ':
-                        details['director'] = value
-                    elif label == 'genre' or label == 'വിഭാഗം':
-                        details['genre'] = value
-                    elif label == 'certification' or label == 'സർട്ടിഫിക്കേഷൻ':
-                        details['certification'] = value
-                    elif label == 'imdb rating' or label == 'റേറ്റിംഗ്':
-                        details['imdb_rating'] = value
-                    elif label.startswith('translat') or label == 'പരിഭാഷകർ': # translations, translator, etc.
-                        # Translator info
-                        translator_link = cells[1].select_one('a')
-                        if translator_link:
-                            details['translatedBy'] = {
-                                'name': clean_text(translator_link.get_text()),
-                                'url': translator_link.get('href')
-                            }
-                        else:
-                            details['translatedBy'] = {
-                                'name': value,
-                                'url': None
-                            }
+                    table_data[label] = cells[1] # Store the whole cell element
+
+            # Now, assign values by explicitly looking for them in the parsed data
+
+            FIELD_MAPPING = {
+                'director': ['director', 'സംവിധായകൻ'],
+                'genre': ['genre', 'വിഭാഗം'],
+                'language': ['language', 'ഭാഷ'],
+                'translatedBy': ['translator', 'translators', 'പരിഭാഷകർ', 'പരിഭാഷകൻ', 'translation', 'പരിഭാഷ'],
+            }
+
+            SIMPLE_FIELD_MAPPING = {
+                 'imdb_rating': ['imdb rating', 'റേറ്റിംഗ്'],
+                 'certification': ['certification', 'സർട്ടിഫിക്കേഷൻ'],
+            }
+
+            for field, labels in FIELD_MAPPING.items():
+                for label in labels:
+                    if label in table_data:
+                        cell = table_data[label]
+                        text = clean_text(cell.get_text())
+                        link_tag = cell.select_one('a')
+                        url = link_tag['href'] if link_tag and link_tag.has_attr('href') else None
+                        details[field] = {'name': text, 'url': url}
+                        break # Move to the next field once found
+
+            for field, labels in SIMPLE_FIELD_MAPPING.items():
+                for label in labels:
+                    if label in table_data:
+                        details[field] = clean_text(table_data[label].get_text())
+                        break
+
+        # Poster maker (credit) - this is outside the table
+        poster_credit_tag = soup.select_one('figure#release-poster figcaption a')
+        if poster_credit_tag:
+            details['poster_maker'] = {
+                'name': clean_text(poster_credit_tag.get_text()),
+                'url': poster_credit_tag.get('href')
+            }
+        else:
+            # Fallback for plain text
+            poster_credit_text = soup.select_one('figure#release-poster figcaption')
+            if poster_credit_text:
+                details['poster_maker'] = {
+                    'name': clean_text(poster_credit_text.get_text()),
+                    'url': None
+                }
         
         # Set defaults for missing fields
         defaults = {
-            'language': 'Malayalam',
-            'director': 'Unknown',
-            'genre': 'Unknown',
+            'language': {'name': 'Unknown', 'url': None},
+            'director': {'name': 'Unknown', 'url': None},
+            'genre': {'name': 'Unknown', 'url': None},
             'certification': 'Not Rated',
             'imdb_rating': 'N/A',
-            'translatedBy': {'name': 'Unknown', 'url': None}
+            'translatedBy': {'name': 'Unknown', 'url': None},
+            'poster_maker': {'name': 'Unknown', 'url': None}
         }
         
         for key, default_value in defaults.items():
