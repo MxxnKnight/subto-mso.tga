@@ -154,7 +154,7 @@ def main():
 
             time.sleep(0.2)
 
-        if new_on_this_page == 0 and page_num > 5: # Stop if a page has no new entries after checking a few pages
+        if new_on_this_page == 0 and page_num > 5:
              logger.info(f"Stopping early on page {page_num}: No new entries found.")
              break
 
@@ -180,13 +180,11 @@ def main():
             entry['total_seasons'] = len(series_db[series_name])
 
     try:
-        if os.path.exists('db.json'):
-            os.rename('db.json', 'db.json.backup')
+        if os.path.exists('db.json'): os.rename('db.json', 'db.json.backup')
         with open('db.json', 'w', encoding='utf-8') as f:
             json.dump(final_db, f, ensure_ascii=False, indent=2)
         
-        if os.path.exists('series_db.json'):
-            os.rename('series_db.json', 'series_db.json.backup')
+        if os.path.exists('series_db.json'): os.rename('series_db.json', 'series_db.json.backup')
         with open('series_db.json', 'w', encoding='utf-8') as f:
             json.dump(series_db, f, ensure_ascii=False, indent=2)
         
