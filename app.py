@@ -31,96 +31,107 @@ series_db: Dict[str, Dict[int, str]] = {}
 
 # --- Menu Messages ---
 WELCOME_MESSAGE = """
-🎬 **Welcome to Malayalam Subtitle Search Bot!**
-
-Your one-stop destination for high-quality Malayalam subtitles for movies and TV shows.
-
-🎯 **What can I do?**
-• Search for Malayalam subtitles
-• Download subtitle files instantly
-• Browse by movies or series
-• Get detailed movie information
-
-Just type any movie or series name to get started!
+╭───────────────────────────────────────────────────────────────────╮
+│     ➧ Welcome to Malayalam Subtitle Search Bot!                   │
+│                                                                   │
+│   Your one-stop destination for high-quality Malayalam subtitles  │
+│   for movies and TV shows.                                        │
+│                                                                   │
+│     What can I do?                                                │
+│   • Search for Malayalam subtitles                                │
+│   • Download subtitle files instantly                             │
+│   • Browse by movies or series                                    │
+│   • Get detailed movie information                                │
+│                                                                   │
+│   Just type any movie or series name to get started!              │
+╰───────────────────────────────────────────────────────────────────╯
 """
 
 ABOUT_MESSAGE = """
-ℹ️ **About This Bot**
-
-**Hosted on:** Render.com
-**Framework:** FastAPI + Custom Telegram Bot API
-**Database:** malayalamsubtitles.org
-**Developer:** Custom Malayalam Subtitle Bot
-**Version:** 2.0 Enhanced
-
-**Features:**
-✅ Real-time subtitle search
-✅ Instant file downloads
-✅ Series season management
-✅ Comprehensive movie details
-✅ Admin controls
-
-**Data Source:** malayalamsubtitles.org (scraped with permission)
+╭───────────────────────────────────────────────────────────────────╮
+│     ➧  About This Bot                                             │
+│                                                                   │
+│   • Hosted on:   Render.com                                       │
+│   • Framework:   FastAPI + Custom Telegram Bot API                │
+│   • Database:    malayalamsubtitles.org                           │
+│   • Developer:   @Mxxn_Knight                                     │
+│   • Version:     2.0 Enhanced                                     │
+│                                                                   │
+│     ➧  Features:                                                  │
+│     Real-time subtitle search                                     │
+│     Instant file downloads                                        │
+│     Series season management                                      │
+│     Comprehensive movie details                                   │
+│     Admin controls                                                │
+│                                                                   │
+│   Data Source: malayalamsubtitles.org                             │
+╰───────────────────────────────────────────────────────────────────╯
 """
 
 HELP_MESSAGE = """
-🆘 **How to Use This Bot**
-
-**🔍 Searching:**
-• Type any movie/series name
-• Use English names for better results
-• Add year for specific versions (e.g., "Dune 2021")
-
-**📺 Series:**
-• Search series name to see all seasons
-• Click season buttons to view episodes
-• Each season has separate download links
-
-**🎬 Movies:**
-• Direct search shows movie details
-• One-click download available
-• View IMDb ratings and details
-
-**💡 Tips:**
-• Try different name variations
-• Check spelling for better results
-• Use /stats to see database size
-
-**⚠️ Note:** This bot provides subtitle files only, not movie content.
+╭───────────────────────────────────────────────────────────────────╮
+│    ➧ How to Use This Bot                                          │
+│                                                                   │
+│     Searching:                                                    │
+│   • Type any movie/series name                                    │
+│   • Use English names for better results                          │
+│   • Add year for specific versions (e.g., "Dune 2021")            │
+│                                                                   │
+│     Series:                                                       │
+│   • Search series name to see all seasons                         │
+│   • Click season buttons to view detailed message                 │
+│   • Each season has separate download links                       │
+│                                                                   │
+│      Movies:                                                      │
+│   • Direct search shows movie details                             │
+│   • One-click download available                                  │
+│   • View IMDb ratings and details                                 │
+│                                                                   │
+│      Tips:                                                        │
+│   • Try different name variations                                 │
+│   • Check spelling for better results                             │
+│                                                                   │
+│      Note:                                                        │
+│   •This bot provides subtitle files only, not movie content.      │                                
+╰───────────────────────────────────────────────────────────────────╯
 """
 
 TOS_MESSAGE = """
-📋 **Terms of Service**
-
-**By using this bot, you agree to:**
-
-1. **Legal Use Only**
-   • Use subtitles for legally owned content only
-   • Respect copyright laws in your jurisdiction
-
-2. **Data Source**
-   • Content scraped from malayalamsubtitles.org
-   • Bot operates under fair use principles
-   • No copyright infringement intended
-
-3. **Limitations**
-   • Service provided "as-is" without warranties
-   • Uptime not guaranteed
-   • Database updated periodically
-
-4. **Prohibited Actions**
-   • No spam or abuse of bot services
-   • No commercial redistribution of content
-   • No automated scraping of this bot
-
-5. **Privacy**
-   • We don't store personal messages
-   • Search queries logged for improvement
-   • No data shared with third parties
-
-**Contact:** Message the bot admin for issues.
-
-By continuing to use this bot, you accept these terms.
+╭───────────────────────────────────────────────────────────────────╮
+│    ➧ Terms of Service                                             │
+│                                                                   │
+│     By using this bot, you agree to:                              │
+│                                                                   │
+│ 1. Legal Use Only                                                 │
+│    • Use subtitles for legally owned content only                 │
+│    • Respect copyright laws in your jurisdiction                  │
+│                                                                   │
+│ 2. Data Source                                                    │
+│    • Content scraped from malayalamsubtitles.org                  │
+│    • Bot operates under fair use principles                       │
+│    • No copyright infringement intended                           │
+│    • All subtitles owned by malayalamsubtitles.org                │
+│    • We dont have any ownership in the files provided by bot      │
+│                                                                   │
+│ 3. Limitations                                                    │
+│    • Service provided "as-is" without warranties                  │
+│    • Uptime not guaranteed                                        │
+│    • Database updated periodically                                │
+│                                                                   │
+│ 4. Prohibited Actions                                             │
+│    • No spam or abuse of bot services                             │
+│    • No commercial redistribution of content                      │
+│    • No automated scraping of this bot                            │
+│                                                                   │
+│ 5. Privacy                                                        │
+│    • We don't store personal messages                             │
+│    • Search queries logged for improvement                        │
+│    • No data shared with third parties                            │
+│                                                                   │
+│ Contact: Message the bot admin for issues.                        │
+│                                                                   │
+│ By continuing to use this bot, you accept these terms.            │
+╰───────────────────────────────────────────────────────────────────╯
 """
 
 def load_databases():
@@ -331,29 +342,53 @@ def create_menu_keyboard(current_menu: str) -> Dict:
     """Create inline keyboard for menus."""
     keyboards = {
         'home': [
-            [{'text': 'ℹ️ About', 'callback_data': 'menu_about'}],
-            [{'text': '🆘 Help', 'callback_data': 'menu_help'}],
-            [{'text': '📋 Terms of Service', 'callback_data': 'menu_tos'}],
-            [{'text': '❌ Close', 'callback_data': 'menu_close'}]
-        ],
+    [
+        {'text': ' About', 'callback_data': 'menu_about'},
+        {'text': ' Help', 'callback_data': 'menu_help'}
+    ],
+    [
+        {'text': ' Terms of Service', 'callback_data': 'menu_tos'}
+    ],
+    [
+        {'text': ' Close', 'callback_data': 'menu_close'}
+    ]
+],
         'about': [
-            [{'text': '🏠 Home', 'callback_data': 'menu_home'}],
-            [{'text': '🆘 Help', 'callback_data': 'menu_help'}],
-            [{'text': '📋 Terms of Service', 'callback_data': 'menu_tos'}],
-            [{'text': '❌ Close', 'callback_data': 'menu_close'}]
-        ],
-        'help': [
-            [{'text': '🏠 Home', 'callback_data': 'menu_home'}],
-            [{'text': 'ℹ️ About', 'callback_data': 'menu_about'}],
-            [{'text': '📋 Terms of Service', 'callback_data': 'menu_tos'}],
-            [{'text': '❌ Close', 'callback_data': 'menu_close'}]
-        ],
+    [
+        {'text': ' Home', 'callback_data': 'menu_home'},
+        {'text': ' Help', 'callback_data': 'menu_help'}
+    ],
+    [
+        {'text': ' Terms of Service', 'callback_data': 'menu_tos'}
+    ],
+    [
+        {'text': ' Close', 'callback_data': 'menu_close'}
+    ]
+],
+        'help':  [
+    [
+        {'text': ' Home', 'callback_data': 'menu_home'},
+        {'text': ' About', 'callback_data': 'menu_about'}
+    ],
+    [
+        {'text': ' Terms of Service', 'callback_data': 'menu_tos'}
+    ],
+    [
+        {'text': ' Close', 'callback_data': 'menu_close'}
+    ]
+],
         'tos': [
-            [{'text': '🏠 Home', 'callback_data': 'menu_home'}],
-            [{'text': 'ℹ️ About', 'callback_data': 'menu_about'}],
-            [{'text': '🆘 Help', 'callback_data': 'menu_help'}],
-            [{'text': '❌ Close', 'callback_data': 'menu_close'}]
-        ]
+    [
+        {'text': ' Home', 'callback_data': 'menu_home'},
+        {'text': ' About', 'callback_data': 'menu_about'}
+    ],
+    [
+        {'text': ' Help', 'callback_data': 'menu_help'}
+    ],
+    [
+        {'text': ' Close', 'callback_data': 'menu_close'}
+    ]
+]
     }
 
     return {'inline_keyboard': keyboards.get(current_menu, keyboards['home'])}
@@ -374,7 +409,7 @@ def create_search_results_keyboard(results: List[Dict]) -> Dict:
             'callback_data': f"view_{result['imdb_id']}"
         }])
 
-    keyboard.append([{'text': '❌ Close', 'callback_data': 'menu_close'}])
+    keyboard.append([{'text': ' Close', 'callback_data': 'menu_close'}])
     return {'inline_keyboard': keyboard}
 
 def create_series_seasons_keyboard(seasons: Dict[int, str]) -> Dict:
@@ -387,7 +422,7 @@ def create_series_seasons_keyboard(seasons: Dict[int, str]) -> Dict:
             'callback_data': f"view_{seasons[season_num]}"
         }])
 
-    keyboard.append([{'text': '❌ Close', 'callback_data': 'menu_close'}])
+    keyboard.append([{'text': ' Close', 'callback_data': 'menu_close'}])
     return {'inline_keyboard': keyboard}
 
 def format_movie_details(entry: Dict, imdb_id: str) -> str:
@@ -457,7 +492,7 @@ def create_detail_keyboard(entry: Dict, imdb_id: str) -> Dict:
     # Back and close buttons
     keyboard.append([
         {'text': '🔙 Back to Search', 'callback_data': 'back_search'},
-        {'text': '❌ Close', 'callback_data': 'menu_close'}
+        {'text': ' Close', 'callback_data': 'menu_close'}
     ])
 
     return {'inline_keyboard': keyboard}
@@ -588,7 +623,7 @@ async def handle_callback_query(callback_data: str, message_data: dict, chat_id:
             return {
                 'method': 'editMessageText',
                 'text': '🔍 Send me a movie or series name to search for subtitles.',
-                'reply_markup': {'inline_keyboard': [[{'text': '❌ Close', 'callback_data': 'menu_close'}]]}
+                'reply_markup': {'inline_keyboard': [[{'text': ' Close', 'callback_data': 'menu_close'}]]}
             }
 
         # Default response
@@ -646,20 +681,6 @@ async def handle_telegram_message(message_data: dict) -> Dict:
                     'text': f"Broadcast feature coming soon!\n\nMessage to broadcast: {broadcast_text}",
                     'parse_mode': 'Markdown'
                 }
-            elif text == '/scrape_start':
-                return {
-                    'chat_id': chat_id,
-                    'text': "🔄 **Scraper Control**\n\nScraper start/stop functionality will be implemented with background tasks.",
-                    'parse_mode': 'Markdown',
-                    'reply_markup': {
-                        'inline_keyboard': [
-                            [{'text': '▶️ Start Scraper', 'callback_data': 'scraper_start'}],
-                            [{'text': '⏹️ Stop Scraper', 'callback_data': 'scraper_stop'}],
-                            [{'text': '📊 Scraper Status', 'callback_data': 'scraper_status'}],
-                            [{'text': '❌ Close', 'callback_data': 'menu_close'}]
-                        ]
-                    }
-                }
 
         # Regular commands
         if text.startswith('/start'):
@@ -685,7 +706,6 @@ async def handle_telegram_message(message_data: dict) -> Dict:
 
 🎬 **Movies:** {total_movies:,}
 📺 **Series:** {total_series:,}
-🎭 **Episodes:** {total_episodes:,}
 📚 **Total Database:** {len(db):,} entries
 
 🤖 **Bot Status:** Online
