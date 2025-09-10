@@ -222,6 +222,7 @@ def get_series_seasons(series_name: str) -> Dict[int, str]:
 async def download_and_upload_subtitle(download_url: str, chat_id: str, title: str, status_message_id: int):
     """Download, upload, and provide status updates for a subtitle file."""
     if not all([download_url, TOKEN, status_message_id]):
+        logger.warning("download_and_upload_subtitle called with missing arguments.")
         return
 
     import aiohttp
@@ -229,38 +230,35 @@ async def download_and_upload_subtitle(download_url: str, chat_id: str, title: s
 
     error_occurred = False
     try:
+        logger.info(f"Starting download for '{title}' from {download_url}")
         await send_telegram_message({
-            'method': 'editMessageText',
-            'chat_id': chat_id,
-            'message_id': status_message_id,
-            'text': f"📥 Downloading subtitle for **{title}**...",
-            'parse_mode': 'Markdown'
+            'method': 'editMessageText', 'chat_id': chat_id, 'message_id': status_message_id,
+            'text': f"📥 Downloading subtitle for **{title}**...", 'parse_mode': 'Markdown'
         })
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            headers = {'User-Agent': 'Mozilla/5.0'}
+            headers = {'User-Agent': 'Mozilla/5.0', 'Referer': 'https://malayalamsubtitles.org/'}
             async with aiohttp.ClientSession(headers=headers) as session:
                 async with session.get(download_url, timeout=60) as resp:
+                    logger.info(f"Download request for '{title}' returned status {resp.status}")
                     resp.raise_for_status()
                     content = await resp.read()
+                    logger.info(f"Successfully downloaded {len(content)} bytes for '{title}'")
 
                     filename = f"{title.replace(' ', '_')}.zip"
                     if 'content-disposition' in resp.headers:
                         cd = resp.headers['content-disposition']
                         filename_match = re.search(r'filename="([^"]+)"', cd)
-                        if filename_match:
-                            filename = filename_match.group(1)
+                        if filename_match: filename = filename_match.group(1)
                     
                     file_path = os.path.join(temp_dir, filename)
                     async with aiofiles.open(file_path, 'wb') as f:
                         await f.write(content)
+                    logger.info(f"Saved '{title}' to temporary file: {file_path}")
 
                     await send_telegram_message({
-                        'method': 'editMessageText',
-                        'chat_id': chat_id,
-                        'message_id': status_message_id,
-                        'text': f"📤 Uploading **{title}**...",
-                        'parse_mode': 'Markdown'
+                        'method': 'editMessageText', 'chat_id': chat_id, 'message_id': status_message_id,
+                        'text': f"📤 Uploading **{title}**...", 'parse_mode': 'Markdown'
                     })
 
                     if filename.lower().endswith('.zip'):
@@ -270,11 +268,9 @@ async def download_and_upload_subtitle(download_url: str, chat_id: str, title: s
 
     except Exception as e:
         error_occurred = True
-        logger.error(f"Error in download/upload process: {e}")
+        logger.exception(f"Error in download/upload process for '{title}': {e}")
         await send_telegram_message({
-            'method': 'editMessageText',
-            'chat_id': chat_id,
-            'message_id': status_message_id,
+            'method': 'editMessageText', 'chat_id': chat_id, 'message_id': status_message_id,
             'text': "❌ **Download Failed**\nAn error occurred while fetching the subtitle. Please try again later.",
             'parse_mode': 'Markdown'
         })
@@ -282,35 +278,34 @@ async def download_and_upload_subtitle(download_url: str, chat_id: str, title: s
         if status_message_id:
             if error_occurred:
                 await asyncio.sleep(5)
-            await send_telegram_message({
-                'method': 'deleteMessage',
-                'chat_id': chat_id,
-                'message_id': status_message_id
-            })
+            logger.info(f"Deleting status message {status_message_id} for '{title}'")
+            await send_telegram_message({'method': 'deleteMessage', 'chat_id': chat_id, 'message_id': status_message_id})
 
 async def upload_zip_contents(zip_path: str, chat_id: str, title: str) -> bool:
     """Extract and upload all files from zip."""
+    logger.info(f"Processing zip file for '{title}': {zip_path}")
     try:
         with tempfile.TemporaryDirectory() as extract_dir:
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                 zip_ref.extractall(extract_dir)
+            logger.info(f"Extracted zip contents for '{title}' to {extract_dir}")
 
-            # Upload each extracted file
-            for root, dirs, files in os.walk(extract_dir):
+            for root, _, files in os.walk(extract_dir):
                 for file in files:
                     if file.lower().endswith(('.srt', '.ass', '.ssa', '.vtt')):
                         file_path = os.path.join(root, file)
+                        logger.info(f"Found subtitle file '{file}' for '{title}', attempting upload.")
                         await upload_single_file(file_path, chat_id, file)
-
             return True
     except Exception as e:
-        logger.error(f"Error processing zip file: {e}")
+        logger.error(f"Error processing zip file for '{title}': {e}")
         return False
 
 async def upload_single_file(file_path: str, chat_id: str, filename: str) -> bool:
     """Upload single file to Telegram."""
     import aiohttp
 
+    logger.info(f"Uploading file '{filename}' to chat {chat_id}")
     try:
         url = f"https://api.telegram.org/bot{TOKEN}/sendDocument"
 
@@ -322,10 +317,14 @@ async def upload_single_file(file_path: str, chat_id: str, filename: str) -> boo
                 data.add_field('caption', f'📁 {filename}')
 
                 async with session.post(url, data=data) as resp:
-                    return resp.status == 200
-
+                    if resp.status == 200:
+                        logger.info(f"Successfully uploaded file '{filename}' to chat {chat_id}")
+                        return True
+                    else:
+                        logger.error(f"Failed to upload file '{filename}'. Status: {resp.status}, Response: {await resp.text()}")
+                        return False
     except Exception as e:
-        logger.error(f"Error uploading file: {e}")
+        logger.error(f"Exception while uploading file '{filename}': {e}")
         return False
 
 def create_menu_keyboard(current_menu: str) -> Dict:
