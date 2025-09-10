@@ -96,6 +96,9 @@ def scrape_detail_page(url):
         details['genre'] = get_field_data(['genre', 'വിഭാഗം'])
         details['language'] = get_field_data(['language', 'ഭാഷ'])
         details['translatedBy'] = get_field_data(['translator', 'translators', 'പരിഭാഷകർ', 'പരിഭാഷകൻ', 'translation', 'പരിഭാഷ'])
+        details['imdb_rating'] = get_field_data(['imdb rating', 'imdb', 'ഐ.എം.ഡി.ബി'])
+        details['msone_release'] = get_field_data(['msone release', 'msone', 'റിലീസ് നം'])
+        details['certification'] = get_field_data(['certification', 'സെർട്ടിഫിക്കേഷൻ'])
 
         poster_credit_tag = soup.select_one('figure#release-poster figcaption a')
         if poster_credit_tag:

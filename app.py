@@ -163,17 +163,23 @@ async def send_telegram_message(payload: Dict):
 
 # --- Bot Actions ---
 async def download_and_upload_subtitle(download_url: str, chat_id: int, title: str, source_url: str):
-    status_message = await send_telegram_message({'method': 'sendMessage', 'chat_id': chat_id, 'text': f"📥 Downloading..."})
-    status_message_id = status_message['result']['message_id'] if status_message and status_message.get('ok') else None
+    status_message = await send_telegram_message({'method': 'sendMessage', 'chat_id': chat_id, 'text': "⏳ Preparing to download..."})
+    status_message_id = status_message.get('result', {}).get('message_id') if status_message.get('ok') else None
 
+    if not status_message_id:
+        logger.error("Failed to send initial status message.")
+        return
+
+    error_occurred = False
     try:
+        await send_telegram_message({'method': 'editMessageText', 'chat_id': chat_id, 'message_id': status_message_id, 'text': "📥 Downloading..."})
+
         with tempfile.TemporaryDirectory() as temp_dir:
             headers = {'User-Agent': 'Mozilla/5.0', 'Referer': 'https://malayalamsubtitles.org/'}
             async with aiohttp.ClientSession(headers=headers) as session:
                 async with session.get(download_url, timeout=60) as resp:
-                    if resp.status != 200:
-                        if status_message_id: await send_telegram_message({'method': 'editMessageText', 'chat_id': chat_id, 'message_id': status_message_id, 'text': f"❌ Download failed."})
-                        return
+                    resp.raise_for_status()
+                    content = await resp.read()
 
                     filename = title.replace(' ', '_') + ".zip"
                     if 'content-disposition' in resp.headers:
@@ -181,16 +187,28 @@ async def download_and_upload_subtitle(download_url: str, chat_id: int, title: s
                         if cd_match: filename = cd_match.group(1).strip('"').split("''")[-1]
                     
                     file_path = os.path.join(temp_dir, filename)
-                    async with aiofiles.open(file_path, 'wb') as f: await f.write(await resp.read())
+                    async with aiofiles.open(file_path, 'wb') as f:
+                        await f.write(content)
                     
-                    if status_message_id: await send_telegram_message({'method': 'editMessageText', 'chat_id': chat_id, 'message_id': status_message_id, 'text': "📤 Uploading..."})
+                    await send_telegram_message({'method': 'editMessageText', 'chat_id': chat_id, 'message_id': status_message_id, 'text': "📤 Uploading..."})
                     
                     if filename.lower().endswith('.zip'):
                         await upload_zip_contents(file_path, chat_id, source_url)
                     else:
                         await upload_single_file(file_path, chat_id, filename, source_url)
+
+    except aiohttp.ClientError as e:
+        error_occurred = True
+        logger.exception(f"HTTP error during subtitle download: {e}")
+        await send_telegram_message({'method': 'editMessageText', 'chat_id': chat_id, 'message_id': status_message_id, 'text': f"❌ Download failed due to a network error."})
+    except Exception as e:
+        error_occurred = True
+        logger.exception(f"An unexpected error occurred during subtitle download: {e}")
+        await send_telegram_message({'method': 'editMessageText', 'chat_id': chat_id, 'message_id': status_message_id, 'text': f"❌ An unexpected error occurred. Please try again later."})
     finally:
         if status_message_id:
+            if error_occurred:
+                await asyncio.sleep(5) # Give user time to read the error
             await send_telegram_message({'method': 'deleteMessage', 'chat_id': chat_id, 'message_id': status_message_id})
 
 async def upload_zip_contents(zip_path: str, chat_id: int, source_url: str):
@@ -243,18 +261,29 @@ def create_detail_keyboard(unique_id: str) -> Dict:
 def format_movie_details(entry: Dict) -> str:
     message = f"🎬 **{entry.get('title', 'Unknown')}** ({entry.get('year', 'N/A')})\n\n"
     def format_field(data, prefix):
-        if data and data.get('name'): return f"{prefix} [{data['name']}]({data['url']})" if data.get('url') else f"{prefix} {data['name']}"
+        if data and data.get('name'):
+            return f"{prefix} [{data['name']}]({data['url']})" if data.get('url') else f"{prefix} {data['name']}"
         return ""
-    details = [s for s in [
+
+    details_list = [s for s in [
         format_field(entry.get('director'), "🎬 Director:"),
         format_field(entry.get('genre'), "🎭 Genre:"),
+        format_field(entry.get('imdb_rating'), "⭐ IMDb Rating:"),
+        format_field(entry.get('certification'), "🛡️ Certification:"),
         format_field(entry.get('language'), "🗣️ Language:"),
+        format_field(entry.get('msone_release'), "릴 MS-Release:"),
         format_field(entry.get('translatedBy'), "🌐 Translator:"),
         format_field(entry.get('poster_maker'), "🎨 Poster by:")
     ] if s]
-    if details: message += "\n".join(details) + "\n\n"
-    if entry.get('descriptionMalayalam'): message += f"📖 **Synopsis:**\n{entry['descriptionMalayalam']}\n\n"
-    if entry.get('source_url'): message += f"🔗 [Go to Subtitle Page]({entry['source_url']})"
+    if details_list:
+        message += "\n".join(details_list) + "\n\n"
+
+    if entry.get('descriptionMalayalam'):
+        message += f"📖 **Synopsis:**\n{entry['descriptionMalayalam']}\n\n"
+
+    if entry.get('source_url'):
+        message += f"🔗 [Go to Subtitle Page]({entry['source_url']})"
+
     return message.strip()
 
 # --- Webhook Handlers ---
@@ -306,15 +335,22 @@ async def handle_callback_query(query: dict) -> Dict:
                 'parse_mode': 'Markdown'
             }
 
-            # Use sendPhoto if poster exists, otherwise fall back to sendMessage
-            if entry.get('posterURL'):
+            poster_url = entry.get('posterURL')
+            logger.info(f"Attempting to send poster for {unique_id}. URL: {poster_url}")
+
+            # Use sendPhoto if poster exists and is a valid HTTPS URL
+            if poster_url and poster_url.startswith('https'):
                 new_message_payload.update({
                     'method': 'sendPhoto',
-                    'photo': entry['posterURL'],
+                    'photo': poster_url,
                     'caption': format_movie_details(entry)
                 })
             else:
-                logger.warning(f"No posterURL for {unique_id}. Falling back to sendMessage.")
+                if poster_url:
+                    logger.warning(f"Invalid or non-HTTPS posterURL for {unique_id}: {poster_url}. Falling back to sendMessage.")
+                else:
+                    logger.warning(f"No posterURL for {unique_id}. Falling back to sendMessage.")
+
                 new_message_payload.update({
                     'method': 'sendMessage',
                     'text': format_movie_details(entry),
