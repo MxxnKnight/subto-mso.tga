@@ -973,7 +973,7 @@ async def telegram_webhook(request: Request):
         response_payload = await handle_telegram_message(data)
 
         if response_payload:
-            return response_payload
+            await send_telegram_message(response_payload)
 
     except json.JSONDecodeError:
         logger.error("Failed to decode JSON from Telegram request")
