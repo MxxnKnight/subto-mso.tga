@@ -7,6 +7,7 @@ import tempfile
 import time
 import aiohttp
 import requests
+import aiofiles
 from http import HTTPStatus
 from typing import Dict, Any, List
 from urllib.parse import urlparse, urljoin
@@ -123,6 +124,24 @@ async def upload_single_file(file_path: str, chat_id: int, filename: str, source
         async with aiohttp.ClientSession() as session: await session.post(url, data=data)
 
 # --- UI Generation ---
+def create_menu_keyboard(context: str) -> Dict:
+    if context == 'home':
+        return {
+            'keyboard': [[{'text': '🔎 Search Subtitles'}], [{'text': 'ℹ️ About'}, {'text': '❓ Help'}]],
+            'resize_keyboard': True,
+            'one_time_keyboard': False
+        }
+    return {}
+
+def create_search_results_keyboard(results: List[Dict]) -> Dict:
+    keyboard = []
+    for res in results:
+        entry = res['entry']
+        year = f" ({entry['year']})" if entry.get('year') else ""
+        button_text = f"{entry.get('title', 'Unknown')}{year}"
+        keyboard.append([{'text': button_text, 'callback_data': f"v_{res['unique_id']}"}])
+    return {'inline_keyboard': keyboard}
+
 def create_detail_keyboard(unique_id: str) -> Dict:
     entry = db.get(unique_id, {})
     keyboard = []
@@ -172,9 +191,18 @@ async def handle_callback_query(query: dict) -> Dict:
 
 async def handle_message_text(message: dict) -> Dict:
     text, chat_id = message['text'].strip(), message['chat']['id']
+
+    # --- Command Handling ---
     if text == '/start':
         return {'chat_id': chat_id, 'text': WELCOME_MESSAGE, 'reply_markup': create_menu_keyboard('home'), 'parse_mode': 'Markdown'}
+    if text == '/help' or text == '❓ Help':
+        return {'chat_id': chat_id, 'text': HELP_MESSAGE, 'parse_mode': 'Markdown'}
+    if text == '/about' or text == 'ℹ️ About':
+        return {'chat_id': chat_id, 'text': ABOUT_MESSAGE, 'parse_mode': 'Markdown'}
+    if text == '🔎 Search Subtitles':
+        return {'chat_id': chat_id, 'text': "Okay, send me the name of the movie or series you're looking for.", 'parse_mode': 'Markdown'}
 
+    # --- Search Handling ---
     results = search_content(text)
     if not results:
         return {'chat_id': chat_id, 'text': f"🤷‍♀️ No subtitles found for **{text}**.", 'parse_mode': 'Markdown'}
@@ -204,6 +232,10 @@ async def telegram_webhook(request: Request):
         if payload: await send_telegram_message(payload)
     except Exception: logger.exception("Error processing webhook")
     return Response(status_code=HTTPStatus.OK)
+
+@app.get("/", include_in_schema=False)
+def root():
+    return {"status": "ok"}
 
 @app.get("/healthz", include_in_schema=False)
 def health_check(): return {"status": "ok"}
