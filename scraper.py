@@ -15,9 +15,7 @@ BASE_URL = "https://malayalamsubtitles.org"
 RELEASES_URL = f"{BASE_URL}/releases/"
 
 # Configuration
-# Set a high default for cron jobs, but allow override. 15 pages is roughly 60 entries.
-MAX_PAGES = int(os.environ.get("SCRAPER_MAX_PAGES", "200"))
-SCRAPER_RUNNING = False
+MAX_PAGES = int(os.environ.get("SCRAPER_MAX_PAGES", "300"))
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -94,10 +92,6 @@ def clean_text(text):
 
 def scrape_detail_page(url):
     """Scrape comprehensive details from a movie/series page."""
-    global SCRAPER_RUNNING
-    if not SCRAPER_RUNNING:
-        return None
-        
     logger.info(f"Scraping detail page: {url}")
     soup = get_soup(url)
     if not soup:
@@ -106,173 +100,92 @@ def scrape_detail_page(url):
     try:
         details = {}
         
-        # Basic title
-        title_tag = soup.select_one('h1#release-title') or soup.select_one('h1.entry-title') or soup.select_one('h1')
-        raw_title = title_tag.get_text(strip=True) if title_tag else "Unknown Title"
-        details['title'] = clean_text(raw_title)
+        title_tag = soup.select_one('h1.entry-title') or soup.select_one('h1#release-title')
+        details['title'] = clean_text(title_tag.get_text()) if title_tag else "Unknown Title"
+        details['year'] = extract_year(details['title'])
+        details.update(extract_season_info(details['title']))
         
-        # Extract year from title
-        details['year'] = extract_year(raw_title)
-        
-        # Extract season information
-        season_info = extract_season_info(raw_title)
-        details.update(season_info)
-        
-        # MSOne release number
         srt_tag = soup.select_one('a#download-button')
-        if srt_tag:
-            download_url = srt_tag.get('data-downloadurl') or srt_tag.get('href')
-            details['srtURL'] = download_url
-            details['msone_release_number'] = extract_msone_number(download_url) if download_url else None
-        else:
-            details['srtURL'] = None
-            details['msone_release_number'] = None
+        details['srtURL'] = (srt_tag.get('data-downloadurl') or srt_tag.get('href')) if srt_tag else None
+        details['msone_release_number'] = extract_msone_number(details['srtURL']) if details['srtURL'] else None
         
-        # Poster
         poster_tag = soup.select_one('figure#release-poster img') or soup.select_one('.post-thumbnail img')
         if poster_tag and poster_tag.get('src'):
-            poster_url = poster_tag['src']
-            if poster_url.startswith('/'):
-                poster_url = urljoin(BASE_URL, poster_url)
-            details['posterMalayalam'] = poster_url
-        else:
-            details['posterMalayalam'] = None
+            details['posterMalayalam'] = urljoin(BASE_URL, poster_tag['src'])
         
-        # Poster maker (credit)
-        poster_credit = soup.select_one('figure#release-poster figcaption')
-        details['poster_maker'] = clean_text(poster_credit.get_text()) if poster_credit else None
-        
-        # Synopsis/Description
-        desc_tag = soup.select_one('div#synopsis') or soup.select_one('.entry-content')
-        if desc_tag:
-            description = clean_text(desc_tag.get_text())
-            details['descriptionMalayalam'] = description[:2000] + "..." if len(description) > 2000 else description
-        else:
-            details['descriptionMalayalam'] = "No description available"
-        
-        # IMDb URL
         imdb_tag = soup.select_one('a#imdb-button') or soup.select_one('a[href*="imdb.com"]')
         details['imdbURL'] = imdb_tag['href'] if imdb_tag else None
-        
-        # A more robust way to parse the details table
+
+        desc_tag = soup.select_one('div#synopsis') or soup.select_one('.entry-content')
+        if desc_tag:
+            details['descriptionMalayalam'] = clean_text(desc_tag.get_text(separator='\n', strip=True))
+
+        # --- Two-pass table parsing for robustness ---
         details_table = soup.select_one('#release-details-table tbody')
+        table_data = {}
         if details_table:
-            # First, parse all rows into a dictionary
-            table_data = {}
-            rows = details_table.select('tr')
-            for row in rows:
+            for row in details_table.select('tr'):
                 cells = row.select('td')
                 if len(cells) >= 2:
                     label = clean_text(cells[0].get_text()).lower().strip().replace(':', '')
-                    table_data[label] = cells[1] # Store the whole cell element
+                    table_data[label] = cells[1]
 
-            # Now, assign values by explicitly looking for them in the parsed data
+        def get_field_data(labels):
+            for label in labels:
+                if label in table_data:
+                    cell = table_data[label]
+                    text = clean_text(cell.get_text())
+                    link_tag = cell.select_one('a')
+                    url = urljoin(BASE_URL, link_tag['href']) if link_tag and link_tag.has_attr('href') else None
+                    return {'name': text, 'url': url}
+            return None
 
-            FIELD_MAPPING = {
-                'director': ['director', 'സംവിധായകൻ'],
-                'genre': ['genre', 'വിഭാഗം'],
-                'language': ['language', 'ഭാഷ'],
-                'translatedBy': ['translator', 'translators', 'പരിഭാഷകർ', 'പരിഭാഷകൻ', 'translation', 'പരിഭാഷ'],
-            }
+        details['director'] = get_field_data(['director', 'സംവിധായകൻ'])
+        details['genre'] = get_field_data(['genre', 'വിഭാഗം'])
+        details['language'] = get_field_data(['language', 'ഭാഷ'])
+        details['translatedBy'] = get_field_data(['translator', 'translators', 'പരിഭാഷകർ', 'പരിഭാഷകൻ', 'translation', 'പരിഭാഷ'])
 
-            SIMPLE_FIELD_MAPPING = {
-                 'imdb_rating': ['imdb rating', 'റേറ്റിംഗ്'],
-                 'certification': ['certification', 'സർട്ടിഫിക്കേഷൻ'],
-            }
+        def get_simple_field(labels):
+            for label in labels:
+                if label in table_data:
+                    return clean_text(table_data[label].get_text())
+            return None
 
-            for field, labels in FIELD_MAPPING.items():
-                for label in labels:
-                    if label in table_data:
-                        cell = table_data[label]
-                        text = clean_text(cell.get_text())
-                        link_tag = cell.select_one('a')
-                        url = link_tag['href'] if link_tag and link_tag.has_attr('href') else None
-                        details[field] = {'name': text, 'url': url}
-                        break # Move to the next field once found
+        details['imdb_rating'] = get_simple_field(['imdb rating', 'റേറ്റിംഗ്'])
+        details['certification'] = get_simple_field(['certification', 'സർട്ടിഫിക്കേഷൻ'])
 
-            for field, labels in SIMPLE_FIELD_MAPPING.items():
-                for label in labels:
-                    if label in table_data:
-                        details[field] = clean_text(table_data[label].get_text())
-                        break
-
-        # Poster maker (credit) - this is outside the table
         poster_credit_tag = soup.select_one('figure#release-poster figcaption a')
         if poster_credit_tag:
-            details['poster_maker'] = {
-                'name': clean_text(poster_credit_tag.get_text()),
-                'url': poster_credit_tag.get('href')
-            }
+            details['poster_maker'] = {'name': clean_text(poster_credit_tag.get_text()), 'url': poster_credit_tag.get('href')}
         else:
-            # Fallback for plain text
             poster_credit_text = soup.select_one('figure#release-poster figcaption')
             if poster_credit_text:
-                details['poster_maker'] = {
-                    'name': clean_text(poster_credit_text.get_text()),
-                    'url': None
-                }
-        
-        # Set defaults for missing fields
+                details['poster_maker'] = {'name': clean_text(poster_credit_text.get_text()), 'url': None}
+
+        # --- Set defaults for any fields that were not found ---
         defaults = {
-            'language': {'name': 'Unknown', 'url': None},
-            'director': {'name': 'Unknown', 'url': None},
-            'genre': {'name': 'Unknown', 'url': None},
-            'certification': 'Not Rated',
-            'imdb_rating': 'N/A',
-            'translatedBy': {'name': 'Unknown', 'url': None},
-            'poster_maker': {'name': 'Unknown', 'url': None}
+            'language': {'name': 'Unknown', 'url': None}, 'director': {'name': 'Unknown', 'url': None},
+            'genre': {'name': 'Unknown', 'url': None}, 'certification': 'Not Rated', 'imdb_rating': 'N/A',
+            'translatedBy': {'name': 'Unknown', 'url': None}, 'poster_maker': {'name': 'Unknown', 'url': None}
         }
-        
         for key, default_value in defaults.items():
-            if key not in details:
+            if not details.get(key):
                 details[key] = default_value
-        
-        # Additional metadata
+
         details['scraped_at'] = time.strftime('%Y-%m-%d %H:%M:%S')
         details['source_url'] = url
         
-        logger.info(f"Successfully scraped: {details['title']} ({details.get('year', 'Unknown')})")
+        logger.info(f"Successfully scraped: {details['title']}")
         return details
 
     except Exception as e:
-        logger.error(f"Error scraping detail page {url}: {e}")
+        logger.exception(f"Error scraping detail page {url}: {e}")
         return None
-
-def get_series_seasons(series_name, all_results):
-    """Get all seasons for a series."""
-    seasons = {}
-    for result in all_results:
-        if result.get('is_series') and result.get('series_name'):
-            # Normalize series name for comparison
-            result_series = re.sub(r'[^\w\s]', '', result['series_name'].lower())
-            search_series = re.sub(r'[^\w\s]', '', series_name.lower())
-            
-            if result_series in search_series or search_series in result_series:
-                season_num = result.get('season_number', 1)
-                seasons[season_num] = result
-    
-    return seasons
-
-def stop_scraper():
-    """Stop the scraper gracefully."""
-    global SCRAPER_RUNNING
-    SCRAPER_RUNNING = False
-    logger.info("Scraper stop requested - will finish current entry")
-
-def start_scraper():
-    """Start the scraper."""
-    global SCRAPER_RUNNING
-    SCRAPER_RUNNING = True
-    return main()
 
 def main():
     """Main scraper function."""
-    global SCRAPER_RUNNING
-    SCRAPER_RUNNING = True
-    
-    logger.info("Starting enhanced Malayalam subtitle scraper...")
-    
-    # --- Load existing database for incremental update ---
+    logger.info("Starting Malayalam subtitle scraper...")
+
     try:
         with open('db.json', 'r', encoding='utf-8') as f:
             final_db = json.load(f)
@@ -282,81 +195,65 @@ def main():
         logger.info("No existing db.json found or it's invalid. Starting fresh.")
 
     current_page_url = RELEASES_URL
-    processed_count = 0
+    newly_added_count = 0
     skipped_count = 0
 
     for page_num in range(1, MAX_PAGES + 1):
-        if not SCRAPER_RUNNING:
-            logger.info("Scraper stopped by user request")
-            break
-            
         logger.info(f"Scraping page {page_num}/{MAX_PAGES}: {current_page_url}")
         
         list_soup = get_soup(current_page_url)
         if not list_soup:
-            logger.error(f"Failed to load page {page_num}")
+            logger.error(f"Failed to load page {page_num}, stopping.")
             break
 
-        # Find entries
         entries = list_soup.select('article.loop-entry') or list_soup.select('article')
         if not entries:
-            logger.warning("No entries found on this page")
+            logger.warning("No entries found on this page, stopping.")
             break
             
         logger.info(f"Found {len(entries)} entries on page {page_num}")
         
         new_on_this_page = 0
-        for i, entry in enumerate(entries):
-            if not SCRAPER_RUNNING:
-                logger.info("Scraper stopped - finishing current page")
-                break
-                
-            logger.info(f"Processing entry {i+1}/{len(entries)} (Total: {processed_count + 1})")
-            
+        for entry in entries:
             link_tag = entry.select_one('h2.entry-title a') or entry.select_one('a[href]')
-            if link_tag and link_tag.get('href'):
-                detail_url = link_tag['href']
-                
-                # Ensure absolute URL
-                if detail_url.startswith('/'):
-                    detail_url = BASE_URL + detail_url
-                
-                # Pre-check if we already have this entry to save time
-                # Note: This is a simple check. A more robust check would be to get the IMDb ID from the link if possible.
-                # For now, we scrape then check.
+            if not (link_tag and link_tag.get('href')):
+                continue
 
-                post_details = scrape_detail_page(detail_url)
-                if post_details:
-                    imdb_id = extract_imdb_id(post_details.get('imdbURL'))
-                    if imdb_id:
-                        if imdb_id not in final_db:
-                            final_db[imdb_id] = post_details
-                            processed_count += 1
-                            new_on_this_page += 1
-                            logger.info(f"New entry found: {post_details['title']} ({imdb_id})")
-                        else:
-                            logger.info(f"Skipping existing entry: {post_details['title']} ({imdb_id})")
-                    else:
-                        logger.warning(f"No IMDb ID for: {post_details.get('title')}, skipping.")
-                        skipped_count += 1
-                
-                # Respectful delay
-                time.sleep(1.5)
+            detail_url = urljoin(BASE_URL, link_tag['href'])
 
-        # Find next page
+            post_details = scrape_detail_page(detail_url)
+            if not post_details:
+                continue
+
+            imdb_id = extract_imdb_id(post_details.get('imdbURL'))
+            if imdb_id and imdb_id not in final_db:
+                final_db[imdb_id] = post_details
+                newly_added_count += 1
+                new_on_this_page += 1
+                logger.info(f"NEW: {post_details['title']} ({imdb_id})")
+            elif imdb_id:
+                logger.debug(f"EXISTING: {post_details['title']} ({imdb_id})")
+            else:
+                logger.warning(f"Skipping entry with no IMDb ID: {post_details.get('title')}")
+                skipped_count += 1
+
+            time.sleep(0.5) # Shorter delay between entries
+
+        if new_on_this_page == 0 and page_num > 1: # Stop if a page has no new entries (after the first page)
+             logger.info(f"Stopping early on page {page_num}: No new entries found.")
+             break
+
         next_page_tag = list_soup.select_one('a.next.page-numbers')
         if next_page_tag and next_page_tag.get('href'):
-            current_page_url = next_page_tag['href']
-            if current_page_url.startswith('/'):
-                current_page_url = BASE_URL + current_page_url
+            current_page_url = urljoin(BASE_URL, next_page_tag['href'])
         else:
-            logger.info("No next page found")
+            logger.info("No next page found, stopping.")
             break
 
-        # Delay between pages
-        time.sleep(3)
+        time.sleep(1) # Shorter delay between pages
 
-    logger.info(f"Scraping finished. Total entries in database: {len(final_db)}")
+    logger.info(f"Scraping finished. Added {newly_added_count} new entries.")
+    logger.info(f"Total entries in database: {len(final_db)}")
 
     # Rebuild the series_db from the final, combined database
     series_db = {}
@@ -394,18 +291,8 @@ def main():
         size = os.path.getsize('db.json')
         logger.info(f"Database file size: {size:,} bytes")
         
-        return True
-        
     except Exception as e:
         logger.error(f"Error writing database: {e}")
-        return False
-    finally:
-        SCRAPER_RUNNING = False
 
 if __name__ == "__main__":
-    success = start_scraper()
-    if success:
-        logger.info("Scraper completed successfully!")
-    else:
-        logger.error("Scraper failed!")
-        exit(1)
+    main()

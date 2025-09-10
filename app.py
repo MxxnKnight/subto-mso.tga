@@ -4,6 +4,7 @@ import logging
 import asyncio
 import zipfile
 import tempfile
+import threading
 import time
 from http import HTTPStatus
 from typing import Dict, Any, List
@@ -25,12 +26,12 @@ logger = logging.getLogger(__name__)
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "a-random-string")
 OWNER_ID = os.environ.get("OWNER_ID")
-DB_FILE = "db.json"
-SERIES_DB_FILE = "series_db.json"
+DB_FILE = os.environ.get("DB_FILE", "db.json")
 
 # --- Global Variables ---
 db: Dict[str, Any] = {}
 series_db: Dict[str, Dict[int, str]] = {}
+scraper_status = {"running": False, "progress": ""}
 
 # --- Menu Messages ---
 WELCOME_MESSAGE = """
@@ -141,7 +142,7 @@ def load_databases():
     
     # Load series database
     try:
-        with open(SERIES_DB_FILE, 'r', encoding='utf-8') as f:
+        with open('series_db.json', 'r', encoding='utf-8') as f:
             series_db = json.load(f)
             logger.info(f"Loaded series database: {len(series_db)} series")
     except Exception as e:
@@ -260,12 +261,13 @@ async def download_and_upload_subtitle(download_url: str, chat_id: str, title: s
                     if resp.status != 200:
                         error_body = await resp.text()
                         logger.error(f"[ChatID: {chat_id}] Download failed with status {resp.status}. Response: {error_body[:200]}")
-                        await send_telegram_message({
-                            'method': 'editMessageText',
-                            'chat_id': chat_id,
-                            'message_id': status_message_id,
-                            'text': f"❌ Failed to download subtitle (Server returned HTTP {resp.status}). Please try again later."
-                        })
+                        if status_message_id:
+                            await send_telegram_message({
+                                'method': 'editMessageText',
+                                'chat_id': chat_id,
+                                'message_id': status_message_id,
+                                'text': f"❌ Failed to download subtitle (Server returned HTTP {resp.status}). Please try again later."
+                            })
                         return False # Keep the error message visible
                     
                     # Get filename from headers or URL
@@ -348,46 +350,26 @@ async def upload_zip_contents(zip_path: str, chat_id: str, title: str, source_ur
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                 zip_ref.extractall(extract_dir)
             
-            # Find subtitle files
             subtitle_files = []
-            for root, dirs, files in os.walk(extract_dir):
+            for root, _, files in os.walk(extract_dir):
                 for file in files:
                     if file.lower().endswith(('.srt', '.ass', '.ssa', '.vtt')):
                         subtitle_files.append(os.path.join(root, file))
             
-            logger.info(f"[ChatID: {chat_id}] Found {len(subtitle_files)} subtitle file(s) in zip.")
-
             if not subtitle_files:
-                await send_telegram_message({
-                    'chat_id': chat_id,
-                    'text': "🤷‍♂️ No subtitle files (.srt, .ass, etc.) were found inside the downloaded archive."
-                })
+                await send_telegram_message({'chat_id': chat_id, 'text': "🤷‍♂️ No subtitle files found in archive."})
                 return False
             
-            # Upload each file
-            uploaded_count = 0
             for file_path in subtitle_files:
                 filename = os.path.basename(file_path)
-                if await upload_single_file(file_path, chat_id, filename, source_url):
-                    uploaded_count += 1
-                else:
-                    logger.warning(f"[ChatID: {chat_id}] Failed to upload {filename} from zip.")
-                await asyncio.sleep(1)  # Rate limiting
+                await upload_single_file(file_path, chat_id, filename, source_url)
+                await asyncio.sleep(1)
             
-            logger.info(f"[ChatID: {chat_id}] Successfully uploaded {uploaded_count}/{len(subtitle_files)} files.")
-
-            if uploaded_count > 0:
-                await send_telegram_message({
-                    'chat_id': chat_id,
-                    'text': f"✅ Successfully uploaded {uploaded_count} subtitle file(s) for **{title}**."
-                })
-            
-            return uploaded_count > 0
+            await send_telegram_message({'chat_id': chat_id, 'text': f"✅ Uploaded {len(subtitle_files)} subtitle(s)."})
+            return True
 
     except zipfile.BadZipFile:
-        logger.error(f"[ChatID: {chat_id}] The downloaded file is not a valid zip archive.")
-        await send_telegram_message({'chat_id': chat_id, 'text': "❌ The downloaded file was corrupted or not a valid zip file."})
-        # Fallback: try to upload the file directly
+        logger.warning(f"[ChatID: {chat_id}] Bad zip file. Trying to upload directly.")
         return await upload_single_file(zip_path, chat_id, os.path.basename(zip_path), source_url)
     except Exception as e:
         logger.exception(f"[ChatID: {chat_id}] Error processing zip file: {e}")
@@ -398,48 +380,34 @@ async def upload_single_file(file_path: str, chat_id: str, filename: str, source
     """Upload single file to Telegram."""
     import aiohttp
     
-    logger.info(f"[ChatID: {chat_id}] Preparing to upload single file: {filename} from {file_path}")
+    if not os.path.exists(file_path):
+        logger.error(f"[ChatID: {chat_id}] File not found for upload: {file_path}")
+        return False
 
+    file_size = os.path.getsize(file_path)
+    if file_size > 49 * 1024 * 1024:  # 49MB limit for safety
+        await send_telegram_message({'chat_id': chat_id, 'text': f"❌ File **{filename}** is too large."})
+        return False
+
+    url = f"https://api.telegram.org/bot{TOKEN}/sendDocument"
     try:
-        if not os.path.exists(file_path):
-            logger.error(f"[ChatID: {chat_id}] File not found for upload: {file_path}")
-            return False
-        
-        file_size = os.path.getsize(file_path)
-        logger.info(f"[ChatID: {chat_id}] File size: {file_size} bytes.")
-        if file_size > 49 * 1024 * 1024:  # 49MB limit for safety
-            logger.warning(f"[ChatID: {chat_id}] File {filename} is too large ({file_size} bytes).")
-            await send_telegram_message({
-                'chat_id': chat_id,
-                'text': f"❌ File **{filename}** is too large ({file_size / 1024 / 1024:.2f} MB). Telegram's limit is 50MB."
-            })
-            return False
-        
-        url = f"https://api.telegram.org/bot{TOKEN}/sendDocument"
-        
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120)) as session:
             with open(file_path, 'rb') as f:
                 data = aiohttp.FormData()
                 data.add_field('chat_id', chat_id)
                 data.add_field('document', f, filename=filename)
-                
-                # Create hyperlinked caption
                 caption = f"[{filename}]({source_url})" if source_url else filename
                 data.add_field('caption', caption)
                 data.add_field('parse_mode', 'Markdown')
 
-                logger.info(f"[ChatID: {chat_id}] Posting file to Telegram API with caption: {caption}")
                 async with session.post(url, data=data) as resp:
-                    success = resp.status == 200
-                    if not success:
+                    if resp.status != 200:
                         error_text = await resp.text()
-                        logger.error(f"[ChatID: {chat_id}] Telegram upload failed with status {resp.status}: {error_text}")
-                    else:
-                        logger.info(f"[ChatID: {chat_id}] Successfully uploaded {filename} to Telegram.")
-                    return success
-    
+                        logger.error(f"Upload failed: {resp.status} - {error_text}")
+                        return False
+                    return True
     except Exception as e:
-        logger.exception(f"[ChatID: {chat_id}] An unexpected error occurred during file upload: {e}")
+        logger.exception(f"Error uploading file: {e}")
         return False
 
 def create_menu_keyboard(current_menu: str) -> Dict:
@@ -465,19 +433,10 @@ def create_menu_keyboard(current_menu: str) -> Dict:
     
     return {'inline_keyboard': keyboards.get(current_menu, keyboards['home'])}
 
-def create_search_results_keyboard(results: List[Dict], query: str) -> Dict:
+def create_search_results_keyboard(results: List[Dict]) -> Dict:
     """Create keyboard for search results."""
     keyboard = []
     
-    # --- Check if it's a series search ---
-    series_names = {r['entry']['series_name'] for r in results if r['entry'].get('is_series') and r['entry'].get('series_name')}
-    if len(series_names) == 1:
-        series_name = series_names.pop()
-        keyboard.append([{
-            'text': f"📺 View All Seasons for {series_name}",
-            'callback_data': f"vs_{series_name[:35]}" # vs = view_series
-        }])
-
     for result in results[:10]:  # Limit to 10 results
         entry = result['entry']
         title = entry.get('title', 'Unknown')[:45]  # Truncate long titles
@@ -487,49 +446,27 @@ def create_search_results_keyboard(results: List[Dict], query: str) -> Dict:
         
         keyboard.append([{
             'text': title,
-            'callback_data': f"v_{result['imdb_id']}_{query[:30]}" # v_ = view
+            'callback_data': f"view_{result['imdb_id']}"
         }])
     
     keyboard.append([{'text': '❌ Close', 'callback_data': 'menu_close'}])
     return {'inline_keyboard': keyboard}
 
-def create_series_seasons_keyboard(seasons: Dict[int, str], series_name: str, page: int = 1) -> Dict:
-    """Create a paginated keyboard for series seasons."""
-    PAGE_SIZE = 10
-    
-    sorted_seasons = sorted(seasons.items())
-    start_index = (page - 1) * PAGE_SIZE
-    end_index = start_index + PAGE_SIZE
-
-    paginated_seasons = sorted_seasons[start_index:end_index]
-    
+def create_series_seasons_keyboard(seasons: Dict[int, str]) -> Dict:
+    """Create keyboard for series seasons."""
     keyboard = []
-    # Create a 2-column layout for season buttons
-    row = []
-    for season_num, imdb_id in paginated_seasons:
-        row.append({'text': f'S{season_num}', 'callback_data': f"view_{imdb_id}"})
-        if len(row) == 2:
-            keyboard.append(row)
-            row = []
-    if row:
-        keyboard.append(row)
-
-    # --- Pagination Controls ---
-    nav_row = []
-    if start_index > 0:
-        nav_row.append({'text': '⬅️ Back', 'callback_data': f'sp_{page-1}_{series_name[:30]}'})
-
-    if end_index < len(sorted_seasons):
-        nav_row.append({'text': 'Next ➡️', 'callback_data': f'sp_{page+1}_{series_name[:30]}'})
-
-    if nav_row:
-        keyboard.append(nav_row)
-
+    
+    for season_num in sorted(seasons.keys()):
+        keyboard.append([{
+            'text': f'Season {season_num}',
+            'callback_data': f"view_{seasons[season_num]}"
+        }])
+    
     keyboard.append([{'text': '❌ Close', 'callback_data': 'menu_close'}])
     return {'inline_keyboard': keyboard}
 
 def format_movie_details(entry: Dict, imdb_id: str) -> str:
-    """Format movie/series details with proper field handling and hyperlinks."""
+    """Format movie/series details with proper field handling."""
     title = entry.get('title', 'Unknown Title')
     year = f" ({entry['year']})" if entry.get('year') else ""
     
@@ -540,48 +477,47 @@ def format_movie_details(entry: Dict, imdb_id: str) -> str:
     if entry.get('msone_release_number'):
         message += f"🆔 MSOne Release: `{entry['msone_release_number']}`\n\n"
     
-    # --- Helper to format a field with an optional link ---
-    def format_field(data, prefix):
-        if not data or not data.get('name') or data['name'] == 'Unknown':
-            return None
-        if data.get('url'):
-            return f"{prefix} [{data['name']}]({data['url']})"
-        return f"{prefix} {data['name']}"
-
+    # Movie details - each on separate line, use N/A for missing
     details = []
     
-    # Language
-    lang_str = format_field(entry.get('language'), "🗣️ **Language:**")
-    if lang_str: details.append(lang_str)
+    language = entry.get('language', 'N/A')
+    if language and language != 'Unknown':
+        details.append(f"🗣️ **Language:** {language}")
+    else:
+        details.append(f"🗣️ **Language:** N/A")
 
-    # Director
-    director_str = format_field(entry.get('director'), "🎬 **Director:**")
-    if director_str: details.append(director_str)
+    director = entry.get('director', 'N/A')
+    if director and director != 'Unknown':
+        details.append(f"🎬 **Director:** {director}")
+    else:
+        details.append(f"🎬 **Director:** N/A")
 
-    # Genre
-    genre_str = format_field(entry.get('genre'), "🎭 **Genre:**")
-    if genre_str: details.append(genre_str)
+    genre = entry.get('genre', 'N/A')
+    if genre and genre != 'Unknown':
+        details.append(f"🎭 **Genre:** {genre}")
+    else:
+        details.append(f"🎭 **Genre:** N/A")
 
-    # Rating
-    rating = entry.get('imdb_rating')
+    rating = entry.get('imdb_rating', 'N/A')
     if rating and rating != 'N/A':
         details.append(f"⭐ **IMDb Rating:** {rating}")
+    else:
+        details.append(f"⭐ **IMDb Rating:** N/A")
 
-    # Certification
-    cert = entry.get('certification')
+    cert = entry.get('certification', 'N/A')
     if cert and cert != 'Not Rated':
         details.append(f"🏷️ **Certification:** {cert}")
+    else:
+        details.append(f"🏷️ **Certification:** N/A")
     
     # Translator
-    translator_str = format_field(entry.get('translatedBy'), "🌐 **Translator:**")
-    if translator_str: details.append(translator_str)
+    translator = entry.get('translatedBy', {})
+    if translator and translator.get('name') and translator['name'] != 'Unknown':
+        details.append(f"🌐 **Translator:** {translator['name']}")
+    else:
+        details.append(f"🌐 **Translator:** N/A")
     
-    # Poster Maker
-    poster_maker_str = format_field(entry.get('poster_maker'), "🎨 **Poster by:**")
-    if poster_maker_str: details.append(poster_maker_str)
-
-    if details:
-        message += "\n".join(details) + "\n\n"
+    message += "\n".join(details) + "\n\n"
     
     # Series information
     if entry.get('is_series'):
@@ -593,17 +529,15 @@ def format_movie_details(entry: Dict, imdb_id: str) -> str:
         message += "\n"
     
     # Full synopsis
-    synopsis = entry.get('descriptionMalayalam')
+    synopsis = entry.get('descriptionMalayalam', '')
     if synopsis and synopsis != 'No description available':
         message += f"📖 **Synopsis:**\n{synopsis}\n\n"
+    else:
+        message += f"📖 **Synopsis:** N/A\n\n"
     
-    # Source URL
-    if entry.get('source_url'):
-        message += f"[Source]({entry['source_url']})"
-
     return message
 
-def create_detail_keyboard(entry: Dict, imdb_id: str, query: str) -> Dict:
+def create_detail_keyboard(entry: Dict, imdb_id: str) -> Dict:
     """Create keyboard for movie detail page."""
     keyboard = []
     
@@ -621,14 +555,50 @@ def create_detail_keyboard(entry: Dict, imdb_id: str, query: str) -> Dict:
             'url': entry['imdbURL']
         }])
     
-    # Back and close buttons
-    back_button_data = f"bs_{query}" if query else "menu_home"
+    # Close button
     keyboard.append([
-        {'text': '🔙 Back to Search', 'callback_data': back_button_data},
         {'text': '❌ Close', 'callback_data': 'menu_close'}
     ])
     
     return {'inline_keyboard': keyboard}
+
+def start_scraper_background():
+    """Start scraper in background thread."""
+    def scraper_thread():
+        global scraper_status
+        try:
+            scraper_status["running"] = True
+            scraper_status["progress"] = "Starting scraper..."
+
+            # Import and run scraper
+            from scraper import start_scraper
+            success = start_scraper()
+
+            scraper_status["running"] = False
+            if success:
+                scraper_status["progress"] = "Scraper completed successfully!"
+                # Reload databases
+                load_databases()
+            else:
+                scraper_status["progress"] = "Scraper failed!"
+
+        except Exception as e:
+            logger.error(f"Scraper thread error: {e}")
+            scraper_status["running"] = False
+            scraper_status["progress"] = f"Scraper error: {str(e)}"
+
+    thread = threading.Thread(target=scraper_thread)
+    thread.daemon = True
+    thread.start()
+
+def stop_scraper_background():
+    """Stop scraper gracefully."""
+    try:
+        from scraper import stop_scraper
+        stop_scraper()
+        scraper_status["progress"] = "Stop signal sent to scraper..."
+    except Exception as e:
+        logger.error(f"Error stopping scraper: {e}")
 
 async def handle_callback_query(callback_data: str, message_data: dict, chat_id: str) -> Dict:
     """Handle callback query from inline keyboards."""
@@ -669,17 +639,64 @@ async def handle_callback_query(callback_data: str, message_data: dict, chat_id:
                     'method': 'deleteMessage'
                 }
         
-        elif callback_data.startswith('v_'):
-            parts = callback_data.split('_')
-            imdb_id = parts[1]
-            query = "_".join(parts[2:])
+        elif callback_data.startswith('scraper_'):
+            action = callback_data.replace('scraper_', '')
 
+            if action == 'start':
+                if scraper_status["running"]:
+                    return {
+                        'method': 'answerCallbackQuery',
+                        'text': 'Scraper is already running!',
+                        'show_alert': True
+                    }
+                else:
+                    start_scraper_background()
+                    return {
+                        'method': 'editMessageText',
+                        'text': f"🔄 **Scraper Started!**\n\nStatus: {scraper_status['progress']}\n\nThis may take several minutes...",
+                        'parse_mode': 'Markdown',
+                        'reply_markup': {
+                            'inline_keyboard': [
+                                [{'text': '⏹️ Stop Scraper', 'callback_data': 'scraper_stop'}],
+                                [{'text': '📊 Check Status', 'callback_data': 'scraper_status'}],
+                                [{'text': '❌ Close', 'callback_data': 'menu_close'}]
+                            ]
+                        }
+                    }
+            elif action == 'stop':
+                stop_scraper_background()
+                return {
+                    'method': 'answerCallbackQuery',
+                    'text': 'Stop signal sent to scraper.',
+                    'show_alert': True
+                }
+            elif action == 'status':
+                status_text = f"🔄 **Scraper Status**\n\n"
+                status_text += f"**Running:** {'Yes' if scraper_status['running'] else 'No'}\n"
+                status_text += f"**Progress:** {scraper_status['progress']}\n"
+                status_text += f"**Database Size:** {len(db)} entries"
+
+                return {
+                    'method': 'editMessageText',
+                    'text': status_text,
+                    'parse_mode': 'Markdown',
+                    'reply_markup': {
+                        'inline_keyboard': [
+                            [{'text': '▶️ Start Scraper', 'callback_data': 'scraper_start'}] if not scraper_status['running'] else [{'text': '⏹️ Stop Scraper', 'callback_data': 'scraper_stop'}],
+                            [{'text': '🔄 Refresh Status', 'callback_data': 'scraper_status'}],
+                            [{'text': '❌ Close', 'callback_data': 'menu_close'}]
+                        ]
+                    }
+                }
+
+        elif callback_data.startswith('view_'):
+            imdb_id = callback_data.replace('view_', '')
             if imdb_id in db:
                 entry = db[imdb_id]
                 
                 # Format message
                 detail_text = format_movie_details(entry, imdb_id)
-                keyboard = create_detail_keyboard(entry, imdb_id, query)
+                keyboard = create_detail_keyboard(entry, imdb_id)
                 
                 # Try to send with poster
                 poster_url = entry.get('posterMalayalam')
@@ -700,7 +717,7 @@ async def handle_callback_query(callback_data: str, message_data: dict, chat_id:
                         'text': detail_text,
                         'reply_markup': keyboard,
                         'parse_mode': 'Markdown',
-                        'disable_web_page_preview': True
+                        'disable_web_page_preview': False
                     }
         
         elif callback_data.startswith('dl_'):
@@ -715,7 +732,7 @@ async def handle_callback_query(callback_data: str, message_data: dict, chat_id:
                         download_url,
                         chat_id,
                         entry.get('title', 'subtitle'),
-                        entry.get('source_url')
+                        entry.get('source_url', '') # Pass source_url
                     ))
                     
                     return {
@@ -729,55 +746,6 @@ async def handle_callback_query(callback_data: str, message_data: dict, chat_id:
                         'text': 'Download link not available.',
                         'show_alert': True
                     }
-        
-        elif callback_data.startswith('vs_'):
-            series_name = callback_data.replace('vs_', '')
-            seasons = get_series_seasons(series_name)
-            if not seasons:
-                return {
-                    'method': 'answerCallbackQuery',
-                    'text': 'Could not find seasons for this series.',
-                    'show_alert': True
-                }
-
-            keyboard = create_series_seasons_keyboard(seasons, series_name, page=1)
-            return {
-                'method': 'editMessageText',
-                'text': f"📺 Seasons for **{series_name}**:",
-                'reply_markup': keyboard,
-                'parse_mode': 'Markdown'
-            }
-
-        elif callback_data.startswith('sp_'):
-            parts = callback_data.split('_')
-            page = int(parts[1])
-            series_name = "_".join(parts[2:])
-
-            seasons = get_series_seasons(series_name)
-            keyboard = create_series_seasons_keyboard(seasons, series_name, page=page)
-
-            return {
-                'method': 'editMessageText',
-                'text': f"📺 Seasons for **{series_name}** (Page {page}):",
-                'reply_markup': keyboard,
-                'parse_mode': 'Markdown'
-            }
-
-        elif callback_data == 'back_search':
-            # If the original message had a photo, we must edit the caption.
-            # Otherwise, we can edit the text. This avoids a Telegram API error.
-            if 'photo' in message_data:
-                return {
-                    'method': 'editMessageCaption',
-                    'caption': '🔍 Send me a movie or series name to search again.',
-                    'reply_markup': {'inline_keyboard': [[{'text': '❌ Close', 'callback_data': 'menu_close'}]]}
-                }
-            else:
-                return {
-                    'method': 'editMessageText',
-                    'text': '🔍 Send me a movie or series name to search for subtitles.',
-                    'reply_markup': {'inline_keyboard': [[{'text': '❌ Close', 'callback_data': 'menu_close'}]]}
-                }
         
         # Default response
         return {
@@ -824,69 +792,7 @@ async def handle_telegram_message(message_data: dict) -> Dict:
         
         logger.info(f"Message: '{text}' from {user.get('username', 'unknown')} ({user_id})")
 
-        # --- Handle Commands & Search ---
-        if text.startswith('/'):
-            command = text.split(' ')[0].lower()
-            if command == '/start':
-                return {
-                    'method': 'sendMessage',
-                    'chat_id': chat_id,
-                    'text': WELCOME_MESSAGE,
-                    'reply_markup': create_menu_keyboard('home'),
-                    'parse_mode': 'Markdown'
-                }
-            elif command == '/help':
-                 return {
-                    'method': 'sendMessage',
-                    'chat_id': chat_id,
-                    'text': HELP_MESSAGE,
-                    'reply_markup': create_menu_keyboard('help'),
-                    'parse_mode': 'Markdown'
-                }
-            elif command == '/about':
-                 return {
-                    'method': 'sendMessage',
-                    'chat_id': chat_id,
-                    'text': ABOUT_MESSAGE,
-                    'reply_markup': create_menu_keyboard('about'),
-                    'parse_mode': 'Markdown'
-                }
-            # Admin commands go here
-            elif str(user_id) == OWNER_ID:
-                if command == '/broadcast':
-                    broadcast_text = text.replace('/broadcast ', '')
-                    # TODO: Implement broadcast functionality
-                    return {
-                        'chat_id': chat_id,
-                        'text': f"Broadcast feature coming soon!\n\nMessage to broadcast: {broadcast_text}",
-                        'parse_mode': 'Markdown'
-                    }
-            else:
-                return {
-                    'method': 'sendMessage',
-                    'chat_id': chat_id,
-                    'text': "🤔 Unrecognized command. Type a movie or series name to search."
-                }
-        else:
-            # --- Handle Search Query ---
-            results = search_content(text)
-            if not results:
-                return {
-                    'method': 'sendMessage',
-                    'chat_id': chat_id,
-                    'text': f"🤷‍♀️ No subtitles found for **{text}**. Please check the spelling or try another name.",
-                    'parse_mode': 'Markdown'
-                }
-
-            return {
-                'method': 'sendMessage',
-                'chat_id': chat_id,
-                'text': f"🔎 Found {len(results)} results for **{text}**:",
-                'reply_markup': create_search_results_keyboard(results, text),
-                'parse_mode': 'Markdown'
-            }
-
-        # Fallback for admin check
+        # ✅ Admin commands go inside this function
         if str(user_id) == OWNER_ID:
             if text.startswith('/broadcast '):
                 broadcast_text = text.replace('/broadcast ', '')
@@ -896,7 +802,19 @@ async def handle_telegram_message(message_data: dict) -> Dict:
                     'text': f"Broadcast feature coming soon!\n\nMessage to broadcast: {broadcast_text}",
                     'parse_mode': 'Markdown'
                 }
-            # Add other admin commands here with elif
+            elif text == '/scrape' or text == '/scrape_start':
+                return {
+                    'chat_id': chat_id,
+                    'text': "🛠 Scraper Control Panel",
+                    'parse_mode': 'Markdown',
+                    'reply_markup': {
+                        'inline_keyboard': [
+                            [{'text': '▶️ Start Scraper', 'callback_data': 'scraper_start'}],
+                            [{'text': '📊 Scraper Status', 'callback_data': 'scraper_status'}],
+                            [{'text': '❌ Close', 'callback_data': 'menu_close'}]
+                        ]
+                    }
+                }
 
     except Exception as e:
         logger.error(f"Error handling telegram message: {e}")
@@ -906,18 +824,21 @@ async def handle_telegram_message(message_data: dict) -> Dict:
 async def send_telegram_message(payload: Dict):
     """Send a message to the Telegram API."""
     import aiohttp
-    url = f"https://api.telegram.org/bot{TOKEN}/{payload.get('method', 'sendMessage')}"
+
+    # The method (e.g., sendMessage, deleteMessage) is part of the URL, not the payload
+    method = payload.pop('method', 'sendMessage')
+    url = f"https://api.telegram.org/bot{TOKEN}/{method}"
+
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload) as response:
                 if response.status != 200:
                     error_text = await response.text()
-                    logger.error(f"Telegram API error: {response.status} - {error_text}")
+                    logger.error(f"Telegram API error for method {method}: {response.status} - {error_text}")
                 return await response.json()
     except Exception as e:
         logger.error(f"Error sending message to Telegram: {e}")
     return None
-
 
 # --- FastAPI Application Events ---
 @app.on_event("startup")

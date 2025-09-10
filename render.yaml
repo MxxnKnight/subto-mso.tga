@@ -1,23 +1,14 @@
-# render.yaml
-# This configuration defines a simple web service for the bot.
-# The database is now built and updated via a scheduled GitHub Action.
-
 services:
-  # Web service for the FastAPI bot
   - type: web
     name: subtitle-bot
     env: python
-    # The build command just installs dependencies. The db.json is sourced from the repository.
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "uvicorn app:app --host 0.0.0.0 --port $PORT"
+    buildCommand: pip install -r requirements.txt && python scraper.py
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /healthz
-
     envVars:
       - key: TELEGRAM_BOT_TOKEN
-        sync: false # Keep this secret
+        sync: false
       - key: WEBHOOK_SECRET
-        generateValue: true # Auto-generate a secure secret
+        generateValue: true
       - key: OWNER_ID
-        sync: false # Keep this secret
-      - key: PYTHON_VERSION
-        value: 3.11.4
+        sync: false
