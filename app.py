@@ -792,9 +792,34 @@ async def handle_telegram_message(message_data: dict) -> Dict:
         
         logger.info(f"Message: '{text}' from {user.get('username', 'unknown')} ({user_id})")
 
-        # ✅ Admin commands go inside this function
-        if str(user_id) == OWNER_ID:
-            if text.startswith('/broadcast '):
+        # --- Handle Commands & Search ---
+        if text.startswith('/'):
+            command = text.split(' ')[0].lower()
+            if command == '/start':
+                return {
+                    'method': 'sendMessage',
+                    'chat_id': chat_id,
+                    'text': WELCOME_MESSAGE,
+                    'reply_markup': create_menu_keyboard('home'),
+                    'parse_mode': 'Markdown'
+                }
+            elif command == '/help':
+                 return {
+                    'method': 'sendMessage',
+                    'chat_id': chat_id,
+                    'text': HELP_MESSAGE,
+                    'reply_markup': create_menu_keyboard('help'),
+                    'parse_mode': 'Markdown'
+                }
+            elif command == '/about':
+                 return {
+                    'method': 'sendMessage',
+                    'chat_id': chat_id,
+                    'text': ABOUT_MESSAGE,
+                    'reply_markup': create_menu_keyboard('about'),
+                    'parse_mode': 'Markdown'
+                }
+            elif str(user_id) == OWNER_ID and command == '/broadcast':
                 broadcast_text = text.replace('/broadcast ', '')
                 # TODO: Implement broadcast functionality
                 return {
@@ -802,19 +827,30 @@ async def handle_telegram_message(message_data: dict) -> Dict:
                     'text': f"Broadcast feature coming soon!\n\nMessage to broadcast: {broadcast_text}",
                     'parse_mode': 'Markdown'
                 }
-            elif text == '/scrape' or text == '/scrape_start':
+            else:
                 return {
+                    'method': 'sendMessage',
                     'chat_id': chat_id,
-                    'text': "🛠 Scraper Control Panel",
-                    'parse_mode': 'Markdown',
-                    'reply_markup': {
-                        'inline_keyboard': [
-                            [{'text': '▶️ Start Scraper', 'callback_data': 'scraper_start'}],
-                            [{'text': '📊 Scraper Status', 'callback_data': 'scraper_status'}],
-                            [{'text': '❌ Close', 'callback_data': 'menu_close'}]
-                        ]
-                    }
+                    'text': "🤔 Unrecognized command. Type a movie or series name to search."
                 }
+        else:
+            # --- Handle Search Query ---
+            results = search_content(text)
+            if not results:
+                return {
+                    'method': 'sendMessage',
+                    'chat_id': chat_id,
+                    'text': f"🤷‍♀️ No subtitles found for **{text}**. Please check the spelling or try another name.",
+                    'parse_mode': 'Markdown'
+                }
+
+            return {
+                'method': 'sendMessage',
+                'chat_id': chat_id,
+                'text': f"🔎 Found {len(results)} results for **{text}**:",
+                'reply_markup': create_search_results_keyboard(results),
+                'parse_mode': 'Markdown'
+            }
 
     except Exception as e:
         logger.error(f"Error handling telegram message: {e}")
