@@ -31,107 +31,99 @@ series_db: Dict[str, Dict[int, str]] = {}
 
 # --- Menu Messages ---
 WELCOME_MESSAGE = """
-╭─────────────────────────────────────────────────────────╮
-│     ➧ Welcome to Malayalam Subtitle Search Bot!                   │
-│                                                                   │
-│   Your one-stop destination for high-quality Malayalam subtitles  │
-│   for movies and TV shows.                                        │
-│                                                                   │
-│     What can I do?                                                │
-│   • Search for Malayalam subtitles                                │
-│   • Download subtitle files instantly                             │
-│   • Browse by movies or series                                    │
-│   • Get detailed movie information                                │
-│                                                                   │
-│   Just type any movie or series name to get started!              │
-╰─────────────────────────────────────────────────────────╯
+**🎬 Welcome to Malayalam Subtitle Search Bot!**
+
+Your one-stop destination for high-quality Malayalam subtitles for movies and TV shows.
+
+**🚀 What can I do?**
+• Search for Malayalam subtitles
+• Download subtitle files instantly
+• Browse by movies or series
+• Get detailed movie information
+
+Just type any movie or series name to get started!
 """
 
 ABOUT_MESSAGE = """
-╭─────────────────────────────────────────────────────────╮
-│     ➧  About This Bot                                             │
-│                                                                   │
-│   • Hosted on:   Render.com                                       │
-│   • Framework:   FastAPI + Custom Telegram Bot API                │
-│   • Database:    malayalamsubtitles.org                           │
-│   • Developer:   @Mxxn_Knight                                     │
-│   • Version:     2.0 Enhanced                                     │
-│                                                                   │
-│     ➧  Features:                                                  │
-│     Real-time subtitle search                                     │
-│     Instant file downloads                                        │
-│     Series season management                                      │
-│     Comprehensive movie details                                   │
-│     Admin controls                                                │
-│                                                                   │
-│   Data Source: malayalamsubtitles.org                             │
-╰─────────────────────────────────────────────────────────╯
+**ℹ️ About This Bot**
+
+**🌐 Technical Details:**
+• **Hosted on:** Render.com
+• **Framework:** FastAPI + Custom Telegram Bot API
+• **Database:** malayalamsubtitles.org
+• **Developer:** @Mxxn_Knight
+• **Version:** 2.0 Enhanced
+
+**✨ Features:**
+• Real-time subtitle search
+• Instant file downloads
+• Series season management
+• Comprehensive movie details
+• Admin controls
+
+**📊 Data Source:** malayalamsubtitles.org
 """
 
 HELP_MESSAGE = """
-╭─────────────────────────────────────────────────────────╮
-│    ➧ How to Use This Bot                                          │
-│                                                                   │
-│     Searching:                                                    │
-│   • Type any movie/series name                                    │
-│   • Use English names for better results                          │
-│   • Add year for specific versions (e.g., "Dune 2021")            │
-│                                                                   │
-│     Series:                                                       │
-│   • Search series name to see all seasons                         │
-│   • Click season buttons to view detailed message                 │
-│   • Each season has separate download links                       │
-│                                                                   │
-│      Movies:                                                      │
-│   • Direct search shows movie details                             │
-│   • One-click download available                                  │
-│   • View IMDb ratings and details                                 │
-│                                                                   │
-│      Tips:                                                        │
-│   • Try different name variations                                 │
-│   • Check spelling for better results                             │
-│                                                                   │
-│      Note:                                                        │
-│   •This bot provides subtitle files only, not movie content.      │                                
-╰─────────────────────────────────────────────────────────╯
+**❓ How to Use This Bot**
+
+**🔍 Searching:**
+• Type any movie/series name
+• Use English names for better results
+• Add year for specific versions (e.g., "Dune 2021")
+
+**📺 Series:**
+• Search series name to see all seasons
+• Click season buttons to view detailed message
+• Each season has separate download links
+
+**🎥 Movies:**
+• Direct search shows movie details
+• One-click download available
+• View IMDb ratings and details
+
+**💡 Tips:**
+• Try different name variations
+• Check spelling for better results
+
+**📝 Note:**
+This bot provides subtitle files only, not movie content.
 """
 
 TOS_MESSAGE = """
-╭─────────────────────────────────────────────────────────╮
-│    ➧ Terms of Service                                             │
-│                                                                   │
-│     By using this bot, you agree to:                              │
-│                                                                   │
-│ 1. Legal Use Only                                                 │
-│    • Use subtitles for legally owned content only                 │
-│    • Respect copyright laws in your jurisdiction                  │
-│                                                                   │
-│ 2. Data Source                                                    │
-│    • Content scraped from malayalamsubtitles.org                  │
-│    • Bot operates under fair use principles                       │
-│    • No copyright infringement intended                           │
-│    • All subtitles owned by malayalamsubtitles.org                │
-│    • We dont have any ownership in the files provided by bot      │
-│                                                                   │
-│ 3. Limitations                                                    │
-│    • Service provided "as-is" without warranties                  │
-│    • Uptime not guaranteed                                        │
-│    • Database updated periodically                                │
-│                                                                   │
-│ 4. Prohibited Actions                                             │
-│    • No spam or abuse of bot services                             │
-│    • No commercial redistribution of content                      │
-│    • No automated scraping of this bot                            │
-│                                                                   │
-│ 5. Privacy                                                        │
-│    • We don't store personal messages                             │
-│    • Search queries logged for improvement                        │
-│    • No data shared with third parties                            │
-│                                                                   │
-│ Contact: Message the bot admin for issues.                        │
-│                                                                   │
-│ By continuing to use this bot, you accept these terms.            │
-╰─────────────────────────────────────────────────────────╯
+**📋 Terms of Service**
+
+By using this bot, you agree to:
+
+**1. 📜 Legal Use Only**
+• Use subtitles for legally owned content only
+• Respect copyright laws in your jurisdiction
+
+**2. 🗄️ Data Source**
+• Content scraped from malayalamsubtitles.org
+• Bot operates under fair use principles
+• No copyright infringement intended
+• All subtitles owned by malayalamsubtitles.org
+• We don't have any ownership in the files provided by bot
+
+**3. ⚠️ Limitations**
+• Service provided "as-is" without warranties
+• Uptime not guaranteed
+• Database updated periodically
+
+**4. 🚫 Prohibited Actions**
+• No spam or abuse of bot services
+• No commercial redistribution of content
+• No automated scraping of this bot
+
+**5. 🔒 Privacy**
+• We don't store personal messages
+• Search queries logged for improvement
+• No data shared with third parties
+
+**📞 Contact:** Message the bot admin for issues.
+
+By continuing to use this bot, you accept these terms.
 """
 
 def load_databases():
