@@ -31,7 +31,7 @@ series_db: Dict[str, Dict[int, str]] = {}
 
 # --- Menu Messages ---
 WELCOME_MESSAGE = """
-╭───────────────────────────────────────────────────────────────────╮
+╭─────────────────────────────────────────────────────────╮
 │     ➧ Welcome to Malayalam Subtitle Search Bot!                   │
 │                                                                   │
 │   Your one-stop destination for high-quality Malayalam subtitles  │
@@ -44,11 +44,11 @@ WELCOME_MESSAGE = """
 │   • Get detailed movie information                                │
 │                                                                   │
 │   Just type any movie or series name to get started!              │
-╰───────────────────────────────────────────────────────────────────╯
+╰─────────────────────────────────────────────────────────╯
 """
 
 ABOUT_MESSAGE = """
-╭───────────────────────────────────────────────────────────────────╮
+╭─────────────────────────────────────────────────────────╮
 │     ➧  About This Bot                                             │
 │                                                                   │
 │   • Hosted on:   Render.com                                       │
@@ -65,11 +65,11 @@ ABOUT_MESSAGE = """
 │     Admin controls                                                │
 │                                                                   │
 │   Data Source: malayalamsubtitles.org                             │
-╰───────────────────────────────────────────────────────────────────╯
+╰─────────────────────────────────────────────────────────╯
 """
 
 HELP_MESSAGE = """
-╭───────────────────────────────────────────────────────────────────╮
+╭─────────────────────────────────────────────────────────╮
 │    ➧ How to Use This Bot                                          │
 │                                                                   │
 │     Searching:                                                    │
@@ -93,11 +93,11 @@ HELP_MESSAGE = """
 │                                                                   │
 │      Note:                                                        │
 │   •This bot provides subtitle files only, not movie content.      │                                
-╰───────────────────────────────────────────────────────────────────╯
+╰─────────────────────────────────────────────────────────╯
 """
 
 TOS_MESSAGE = """
-╭───────────────────────────────────────────────────────────────────╮
+╭─────────────────────────────────────────────────────────╮
 │    ➧ Terms of Service                                             │
 │                                                                   │
 │     By using this bot, you agree to:                              │
@@ -131,7 +131,7 @@ TOS_MESSAGE = """
 │ Contact: Message the bot admin for issues.                        │
 │                                                                   │
 │ By continuing to use this bot, you accept these terms.            │
-╰───────────────────────────────────────────────────────────────────╯
+╰─────────────────────────────────────────────────────────╯
 """
 
 def load_databases():
