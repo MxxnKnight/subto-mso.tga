@@ -13,7 +13,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v3
         with:
-          ref: 'jules-bot-fix'
+          ref: 'trae-fix'
 
       - name: Set up Python
         uses: actions/setup-python@v4
