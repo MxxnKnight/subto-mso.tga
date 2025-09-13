@@ -53,7 +53,7 @@ ABOUT_MESSAGE = """**ℹ️ About This Bot**
 - **Hosted on:** Render.com
 - **Framework:** FastAPI + Custom Telegram Bot API
 - **Database:** malayalamsubtitles.org
--**Developer:** [@Mxxn\_Knight](tg://resolve?domain=Mxxn_Knight)
+-**Developer:** [@Mxxn_Knight](tg://resolve?domain=Mxxn_Knight)
 - **Version:** 2.0 Enhanced
 
 **✨ Features:**
