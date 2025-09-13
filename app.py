@@ -486,32 +486,58 @@ async def upload_single_file(file_path: str, chat_id: str, filename: str) -> boo
 
 def create_menu_keyboard(current_menu: str) -> Dict:
     """Create inline keyboard for menus."""
-    all_buttons = {
-        'home': {'text': ' Home', 'callback_data': 'menu_home'},
-        'about': {'text': ' About', 'callback_data': 'menu_about'},
-        'help': {'text': ' Help', 'callback_data': 'menu_help'},
-        'tos': {'text': ' Terms of Service', 'callback_data': 'menu_tos'}
+    keyboards = {
+        'home': [
+    [
+        {'text': ' About', 'callback_data': 'menu_about'},
+        {'text': ' Help', 'callback_data': 'menu_help'}
+    ],
+    [
+        {'text': ' Terms of Service', 'callback_data': 'menu_tos'}
+    ],
+    [
+        {'text': ' Close', 'callback_data': 'menu_close'}
+    ]
+],
+        'about': [
+    [
+        {'text': ' Home', 'callback_data': 'menu_home'},
+        {'text': ' Help', 'callback_data': 'menu_help'}
+    ],
+    [
+        {'text': ' Terms of Service', 'callback_data': 'menu_tos'}
+    ],
+    [
+        {'text': ' Close', 'callback_data': 'menu_close'}
+    ]
+],
+        'help':  [
+    [
+        {'text': ' Home', 'callback_data': 'menu_home'},
+        {'text': ' About', 'callback_data': 'menu_about'}
+    ],
+    [
+        {'text': ' Terms of Service', 'callback_data': 'menu_tos'}
+    ],
+    [
+        {'text': ' Close', 'callback_data': 'menu_close'}
+    ]
+],
+        'tos': [
+    [
+        {'text': ' Home', 'callback_data': 'menu_home'},
+        {'text': ' About', 'callback_data': 'menu_about'}
+    ],
+    [
+        {'text': ' Help', 'callback_data': 'menu_help'}
+    ],
+    [
+        {'text': ' Close', 'callback_data': 'menu_close'}
+    ]
+]
     }
 
-    # Default to home layout if current_menu is invalid
-    if current_menu not in all_buttons:
-        current_menu = 'home'
-
-    keyboard = []
-
-    # The main row of two buttons changes based on current menu
-    if current_menu == 'tos':
-        main_row = [all_buttons['home'], all_buttons['about']]
-        second_row = [all_buttons['help']]
-    else: # for home, about, help
-        main_row = [btn for key, btn in all_buttons.items() if key not in [current_menu, 'tos']]
-        second_row = [all_buttons['tos']]
-
-    keyboard.append(main_row)
-    keyboard.append(second_row)
-    keyboard.append([{'text': ' Close', 'callback_data': 'menu_close'}])
-
-    return {'inline_keyboard': keyboard}
+    return {'inline_keyboard': keyboards.get(current_menu, keyboards['home'])}
 
 def create_search_results_keyboard(results: List[Dict]) -> Dict:
     """Create keyboard for search results."""
@@ -991,6 +1017,7 @@ All admin commands are restricted to bot owner only."""
                     poster_url = entry.get('posterMalayalam')
                     if poster_url:
                         return {
+                            'method': 'sendPhoto',
                             'chat_id': chat_id,
                             'photo': poster_url,
                             'caption': detail_text,
