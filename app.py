@@ -46,7 +46,23 @@ Your one-stop destination for high-quality Malayalam subtitles for movies and TV
 Just type any movie or series name to get started!
 """
 
-ABOUT_MESSAGE = "**ℹ️ About This Bot**\n\n**🌐 Technical Details:**\n• **Hosted on:** Render.com\n• **Framework:** FastAPI + Custom Telegram Bot API\n• **Database:** malayalamsubtitles.org\n• **Developer:** @Mxxn_Knight\n• **Version:** 2.0 Enhanced\n\n**✨ Features:**\n• Real-time subtitle search\n• Instant file downloads\n• Series season management\n• Comprehensive movie details\n• Admin controls\n\n**📊 Data Source:** malayalamsubtitles.org"
+ABOUT_MESSAGE = ABOUT_MESSAGE = """**ℹ️ About This Bot**
+
+**🌐 Technical Details:**
+- **Hosted on:** Render.com  
+- **Framework:** FastAPI + Custom Telegram Bot API  
+- **Database:** malayalamsubtitles.org  
+- **Developer:** @Mxxn_Knight  
+- **Version:** 2.0 Enhanced  
+
+**✨ Features:**
+- Real-time subtitle search  
+- Instant file downloads  
+- Series season management  
+- Comprehensive movie details  
+- Admin controls  
+
+**📊 Data Source:** malayalamsubtitles.org"""
 
 HELP_MESSAGE = """
 **❓ How to Use This Bot**
