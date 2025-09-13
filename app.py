@@ -52,7 +52,7 @@ ABOUT_MESSAGE = """**ℹ️ About This Bot**
 - **Hosted on:** Render.com
 - **Framework:** FastAPI + Custom Telegram Bot API
 - **Database:** malayalamsubtitles.org
-- **Developer:** @Mxxn_Knight
+- **Developer:** @MxxnKnight
 - **Version:** 2.0 Enhanced
 
 **✨ Features:**
@@ -577,10 +577,11 @@ def create_series_seasons_keyboard(seasons: Dict[int, str]) -> Dict:
 def format_movie_details(entry: Dict, imdb_id: str) -> str:
     """Format movie/series details for display."""
     title = entry.get('title', 'Unknown Title')
-    year = f" ({entry['year']})" if entry.get('year') else ""
+    year_val = entry.get('year', '')
+    year = f" (`{year_val}`)" if year_val else ""
 
-    # Main title
-    message = f"🎬 **{title}{year}**\n\n"
+    # Main title - wrap in backticks to be safe
+    message = f"🎬 **`{title}`{year}**\n\n"
 
     # MSOne release number
     if entry.get('msone_release_number'):
@@ -589,18 +590,18 @@ def format_movie_details(entry: Dict, imdb_id: str) -> str:
     # Movie details
     details = []
     if entry.get('language'):
-        details.append(f"🗣️ **Language:** {entry['language']}")
+        details.append(f"🗣️ **Language:** `{entry['language']}`")
     if entry.get('director') and entry['director'] != 'Unknown':
-        details.append(f"🎬 **Director:** {entry['director']}")
+        details.append(f"🎬 **Director:** `{entry['director']}`")
     if entry.get('genre') and entry['genre'] != 'Unknown':
-        details.append(f"🎭 **Genre:** {entry['genre']}")
+        details.append(f"🎭 **Genre:** `{entry['genre']}`")
     if entry.get('imdb_rating') and entry['imdb_rating'] != 'N/A':
-        details.append(f"⭐ **IMDb Rating:** {entry['imdb_rating']}")
+        details.append(f"⭐ **IMDb Rating:** `{entry['imdb_rating']}`")
     if entry.get('certification') and entry['certification'] != 'Not Rated':
-        details.append(f"🏷️ **Certification:** {entry['certification']}")
+        details.append(f"🏷️ **Certification:** `{entry['certification']}`")
 
     if entry.get('translatedBy') and entry['translatedBy']['name'] != 'Unknown':
-        details.append(f"🌐 **Translator:** {entry['translatedBy']['name']}")
+        details.append(f"🌐 **Translator:** `{entry['translatedBy']['name']}`")
 
     if details:
         message += "\n".join(details) + "\n\n"
@@ -614,9 +615,9 @@ def format_movie_details(entry: Dict, imdb_id: str) -> str:
             message += f"• Total Seasons Available: {entry['total_seasons']}\n"
         message += "\n"
 
-    # Synopsis
+    # Synopsis - wrap in pre-formatted block
     if entry.get('descriptionMalayalam') and entry['descriptionMalayalam'] != 'No description available':
-        message += f"📖 **Synopsis:**\n{entry['descriptionMalayalam']}\n\n"
+        message += f"📖 **Synopsis:**\n```\n{entry['descriptionMalayalam']}\n```\n\n"
 
     return message
 
