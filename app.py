@@ -5,7 +5,7 @@ import asyncio
 import zipfile
 import tempfile
 from http import HTTPStatus
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from urllib.parse import urlparse
 import re
 
@@ -46,7 +46,23 @@ Your one-stop destination for high-quality Malayalam subtitles for movies and TV
 Just type any movie or series name to get started!
 """
 
-ABOUT_MESSAGE = "**ℹ️ About This Bot**\n\n**🌐 Technical Details:**\n• **Hosted on:** Render.com\n• **Framework:** FastAPI + Custom Telegram Bot API\n• **Database:** malayalamsubtitles.org\n• **Developer:** @Mxxn_Knight\n• **Version:** 2.0 Enhanced\n\n**✨ Features:**\n• Real-time subtitle search\n• Instant file downloads\n• Series season management\n• Comprehensive movie details\n• Admin controls\n\n**📊 Data Source:** malayalamsubtitles.org"
+ABOUT_MESSAGE = """**ℹ️ About This Bot**
+
+**🌐 Technical Details:**
+- **Hosted on:** Render.com
+- **Framework:** FastAPI + Custom Telegram Bot API
+- **Database:** malayalamsubtitles.org
+- **Developer:** @Mxxn_Knight
+- **Version:** 2.0 Enhanced
+
+**✨ Features:**
+- Real-time subtitle search
+- Instant file downloads
+- Series season management
+- Comprehensive movie details
+- Admin controls
+
+**📊 Data Source:** malayalamsubtitles.org"""
 
 HELP_MESSAGE = """
 **❓ How to Use This Bot**
@@ -137,11 +153,28 @@ def load_tracked_users():
     global tracked_users
     try:
         with open(USERS_FILE, 'r', encoding='utf-8') as f:
-            users_data = json.load(f)
+            content = f.read().strip()
+            if not content:
+                logger.info(f"Users file {USERS_FILE} is empty, starting with empty set")
+                tracked_users = set()
+                return
+
+            users_data = json.loads(content)
             tracked_users = set(users_data.get('users', []))
             logger.info(f"Loaded {len(tracked_users)} tracked users from {USERS_FILE}")
+    except json.JSONDecodeError as e:
+        logger.warning(f"Users file {USERS_FILE} contains invalid JSON: {e}. Starting with empty set.")
+        tracked_users = set()
+        # Try to create a fresh users file
+        try:
+            save_tracked_users()
+        except Exception as save_error:
+            logger.error(f"Could not create fresh users file: {save_error}")
+    except FileNotFoundError:
+        logger.info(f"Users file {USERS_FILE} not found, starting with empty set")
+        tracked_users = set()
     except Exception as e:
-        logger.warning(f"Users file not found at {USERS_FILE}: {e}")
+        logger.warning(f"Error loading users file {USERS_FILE}: {e}. Starting with empty set.")
         tracked_users = set()
 
 def save_tracked_users():
@@ -343,7 +376,7 @@ def get_series_seasons(series_name: str) -> Dict[int, str]:
 
     return seasons
 
-async def download_and_upload_subtitle(download_url: str, chat_id: str, title: str, status_message_id: int):
+async def download_and_upload_subtitle(download_url: str, chat_id: str, title: str, status_message_id: Optional[int]):
     """Download, upload, and provide status updates for a subtitle file."""
     if not all([download_url, TOKEN, status_message_id]):
         logger.warning("download_and_upload_subtitle called with missing arguments.")
@@ -453,58 +486,32 @@ async def upload_single_file(file_path: str, chat_id: str, filename: str) -> boo
 
 def create_menu_keyboard(current_menu: str) -> Dict:
     """Create inline keyboard for menus."""
-    keyboards = {
-        'home': [
-    [
-        {'text': ' About', 'callback_data': 'menu_about'},
-        {'text': ' Help', 'callback_data': 'menu_help'}
-    ],
-    [
-        {'text': ' Terms of Service', 'callback_data': 'menu_tos'}
-    ],
-    [
-        {'text': ' Close', 'callback_data': 'menu_close'}
-    ]
-],
-        'about': [
-    [
-        {'text': ' Home', 'callback_data': 'menu_home'},
-        {'text': ' Help', 'callback_data': 'menu_help'}
-    ],
-    [
-        {'text': ' Terms of Service', 'callback_data': 'menu_tos'}
-    ],
-    [
-        {'text': ' Close', 'callback_data': 'menu_close'}
-    ]
-],
-        'help':  [
-    [
-        {'text': ' Home', 'callback_data': 'menu_home'},
-        {'text': ' About', 'callback_data': 'menu_about'}
-    ],
-    [
-        {'text': ' Terms of Service', 'callback_data': 'menu_tos'}
-    ],
-    [
-        {'text': ' Close', 'callback_data': 'menu_close'}
-    ]
-],
-        'tos': [
-    [
-        {'text': ' Home', 'callback_data': 'menu_home'},
-        {'text': ' About', 'callback_data': 'menu_about'}
-    ],
-    [
-        {'text': ' Help', 'callback_data': 'menu_help'}
-    ],
-    [
-        {'text': ' Close', 'callback_data': 'menu_close'}
-    ]
-]
+    all_buttons = {
+        'home': {'text': ' Home', 'callback_data': 'menu_home'},
+        'about': {'text': ' About', 'callback_data': 'menu_about'},
+        'help': {'text': ' Help', 'callback_data': 'menu_help'},
+        'tos': {'text': ' Terms of Service', 'callback_data': 'menu_tos'}
     }
 
-    return {'inline_keyboard': keyboards.get(current_menu, keyboards['home'])}
+    # Default to home layout if current_menu is invalid
+    if current_menu not in all_buttons:
+        current_menu = 'home'
+
+    keyboard = []
+
+    # The main row of two buttons changes based on current menu
+    if current_menu == 'tos':
+        main_row = [all_buttons['home'], all_buttons['about']]
+        second_row = [all_buttons['help']]
+    else: # for home, about, help
+        main_row = [btn for key, btn in all_buttons.items() if key not in [current_menu, 'tos']]
+        second_row = [all_buttons['tos']]
+
+    keyboard.append(main_row)
+    keyboard.append(second_row)
+    keyboard.append([{'text': ' Close', 'callback_data': 'menu_close'}])
+
+    return {'inline_keyboard': keyboard}
 
 def create_search_results_keyboard(results: List[Dict]) -> Dict:
     """Create keyboard for search results."""
@@ -803,45 +810,45 @@ async def handle_telegram_message(message_data: dict) -> Dict:
             # Track user
             add_user(user_id)
 
-        response = await handle_callback_query(callback_data, callback['message'], str(chat_id))
-        # The chat_id and message_id are now added in handle_callback_query
-        if response:
-            # Handle special case for delete_and_resend (movies with posters)
-            if response.get('method') == 'delete_and_resend':
-                # Delete the current message
+            response = await handle_callback_query(callback_data, callback['message'], str(chat_id))
+            # The chat_id and message_id are now added in handle_callback_query
+            if response:
+                # Handle special case for delete_and_resend (movies with posters)
+                if response.get('method') == 'delete_and_resend':
+                    # Delete the current message
+                    await send_telegram_message({
+                        'method': 'deleteMessage',
+                        'chat_id': response['chat_id'],
+                        'message_id': response['message_id']
+                    })
+
+                    # Send new message with photo
+                    entry = response['entry']
+                    imdb_id = response['imdb_id']
+                    detail_text = format_movie_details(entry, imdb_id)
+                    keyboard = create_detail_keyboard(entry, imdb_id)
+                    poster_url = entry.get('posterMalayalam')
+
+                    new_message_payload = {
+                        'method': 'sendPhoto',
+                        'chat_id': response['chat_id'],
+                        'photo': poster_url,
+                        'caption': detail_text,
+                        'reply_markup': keyboard,
+                        'parse_mode': 'Markdown'
+                    }
+
+                    await send_telegram_message(new_message_payload)
+                else:
+                    # Send the response (edit message, etc.)
+                    await send_telegram_message(response)
+
+                # Answer the callback query to remove the loading state
                 await send_telegram_message({
-                    'method': 'deleteMessage',
-                    'chat_id': response['chat_id'],
-                    'message_id': response['message_id']
+                    'method': 'answerCallbackQuery',
+                    'callback_query_id': callback['id']
                 })
-                
-                # Send new message with photo
-                entry = response['entry']
-                imdb_id = response['imdb_id']
-                detail_text = format_movie_details(entry, imdb_id)
-                keyboard = create_detail_keyboard(entry, imdb_id)
-                poster_url = entry.get('posterMalayalam')
-                
-                new_message_payload = {
-                    'method': 'sendPhoto',
-                    'chat_id': response['chat_id'],
-                    'photo': poster_url,
-                    'caption': detail_text,
-                    'reply_markup': keyboard,
-                    'parse_mode': 'Markdown'
-                }
-                
-                await send_telegram_message(new_message_payload)
-            else:
-                # Send the response (edit message, etc.)
-                await send_telegram_message(response)
-            
-            # Answer the callback query to remove the loading state
-            await send_telegram_message({
-                'method': 'answerCallbackQuery',
-                'callback_query_id': callback['id']
-            })
-        return None
+            return None
 
         # Handle regular messages
         message = message_data.get('message', {})
