@@ -4,6 +4,7 @@ import logging
 import asyncio
 import zipfile
 import tempfile
+import ast
 from http import HTTPStatus
 from typing import Dict, Any, List, Optional
 from urllib.parse import urlparse
@@ -52,7 +53,7 @@ ABOUT_MESSAGE = """**ℹ️ About This Bot**
 - **Hosted on:** Render.com
 - **Framework:** FastAPI + Custom Telegram Bot API
 - **Database:** malayalamsubtitles.org
-- **Developer:** [@Mxxn\_Knight](https://t.me/Mxxn_Knight)
+- **Developer:** @MxxnKnight
 - **Version:** 2.0 Enhanced
 
 **✨ Features:**
@@ -576,32 +577,52 @@ def create_series_seasons_keyboard(seasons: Dict[int, str]) -> Dict:
 
 def format_movie_details(entry: Dict, imdb_id: str) -> str:
     """Format movie/series details for display."""
+
+    def get_display_value(value):
+        """Safely parse stringified dicts and return the 'name' value."""
+        if isinstance(value, str):
+            try:
+                evaluated = ast.literal_eval(value)
+                if isinstance(evaluated, dict) and 'name' in evaluated:
+                    return evaluated['name']
+            except (ValueError, SyntaxError):
+                return value
+        elif isinstance(value, dict) and 'name' in value:
+            return value['name']
+        return value
+
     title = entry.get('title', 'Unknown Title')
-    year_val = entry.get('year', '')
-    year = f" (`{year_val}`)" if year_val else ""
+    year_val = str(entry.get('year', ''))
 
-    # Main title - wrap in backticks to be safe
-    message = f"🎬 **`{title}`{year}**\n\n"
+    # Prevent duplicate year in title
+    if year_val and f"({year_val})" not in title:
+        title_with_year = f"{title} ({year_val})"
+    else:
+        title_with_year = title
 
-    # MSOne release number
+    message = f"🎬 **{title_with_year}**\n\n"
+
     if entry.get('msone_release_number'):
-        message += f"🆔 MSOne Release: `{entry['msone_release_number']}`\n\n"
+        message += f"🆔 MSOne Release: {entry['msone_release_number']}\n\n"
 
-    # Movie details
     details = []
-    if entry.get('language'):
-        details.append(f"🗣️ **Language:** `{entry['language']}`")
-    if entry.get('director') and entry['director'] != 'Unknown':
-        details.append(f"🎬 **Director:** `{entry['director']}`")
-    if entry.get('genre') and entry['genre'] != 'Unknown':
-        details.append(f"🎭 **Genre:** `{entry['genre']}`")
-    if entry.get('imdb_rating') and entry['imdb_rating'] != 'N/A':
-        details.append(f"⭐ **IMDb Rating:** `{entry['imdb_rating']}`")
-    if entry.get('certification') and entry['certification'] != 'Not Rated':
-        details.append(f"🏷️ **Certification:** `{entry['certification']}`")
+    fields_to_format = [
+        ("language", "🗣️ **Language:**"),
+        ("director", "🎬 **Director:**"),
+        ("genre", "🎭 **Genre:**"),
+        ("imdb_rating", "⭐ **IMDb Rating:**"),
+        ("certification", "🏷️ **Certification:**"),
+        ("translatedBy", "🌐 **Translator:**")
+    ]
 
-    if entry.get('translatedBy') and entry['translatedBy']['name'] != 'Unknown':
-        details.append(f"🌐 **Translator:** `{entry['translatedBy']['name']}`")
+    ignore_values = ['Unknown', 'N/A', 'Not Rated']
+
+    for field_key, field_label in fields_to_format:
+        raw_value = entry.get(field_key)
+        if raw_value:
+            display_value = get_display_value(raw_value)
+            if display_value and str(display_value) not in ignore_values:
+                details.append(f"{field_label} {display_value}")
 
     if details:
         message += "\n".join(details) + "\n\n"
@@ -615,9 +636,9 @@ def format_movie_details(entry: Dict, imdb_id: str) -> str:
             message += f"• Total Seasons Available: {entry['total_seasons']}\n"
         message += "\n"
 
-    # Synopsis - wrap in pre-formatted block
+    # Synopsis
     if entry.get('descriptionMalayalam') and entry['descriptionMalayalam'] != 'No description available':
-        message += f"📖 **Synopsis:**\n```\n{entry['descriptionMalayalam']}\n```\n\n"
+        message += f"📖 **Synopsis:**\n{entry['descriptionMalayalam']}\n\n"
 
     return message
 
