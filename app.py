@@ -1287,6 +1287,13 @@ async def root():
         "series_count": len(series_db)
     }
 
+@app.head("/")
+async def head_root():
+    """
+    Handles HEAD requests for the root path, used by UptimeRobot.
+    """
+    return Response(status_code=HTTPStatus.OK)
+
 @app.get("/healthz")
 async def health_check():
     return {
