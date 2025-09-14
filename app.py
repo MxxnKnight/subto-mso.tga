@@ -128,7 +128,7 @@ By continuing to use this bot, you accept these terms.
 """
 
 def load_databases():
-    """Load both main and series databases."""
+    """Load both main and series databases and rebuild series_db for consistency."""
     global db, series_db
 
     # Load main database
@@ -140,14 +140,31 @@ def load_databases():
         logger.error(f"Error loading main database from {DB_FILE}: {e}")
         db = {}
 
-    # Load series database
+    # Load the original series database (even if malformed)
     try:
         with open(SERIES_DB_FILE, 'r', encoding='utf-8') as f:
-            series_db = json.load(f)
-            logger.info(f"Loaded series database: {len(series_db)} series from {SERIES_DB_FILE}")
+            # We don't use this directly, but we log its size for comparison
+            original_series_db = json.load(f)
+            logger.info(f"Loaded original series database: {len(original_series_db)} entries from {SERIES_DB_FILE}")
     except Exception as e:
-        logger.warning(f"Series database not found at {SERIES_DB_FILE}: {e}")
-        series_db = {}
+        logger.warning(f"Could not load original series database from {SERIES_DB_FILE}: {e}")
+
+    # Rebuild the series_db in memory from the main db for correctness
+    logger.info("Rebuilding series database from main DB for consistency...")
+    new_series_db = {}
+    for imdb_id, entry in db.items():
+        if entry.get('is_series'):
+            base_name = get_base_series_name(entry.get('title', ''))
+            if base_name:
+                if base_name not in new_series_db:
+                    new_series_db[base_name] = {}
+
+                season_num = entry.get('season_number')
+                if season_num:
+                    new_series_db[base_name][str(season_num)] = imdb_id
+
+    series_db = new_series_db
+    logger.info(f"Successfully rebuilt series database in memory: {len(series_db)} unique series found.")
 
 def load_tracked_users():
     """Load tracked users from file."""
@@ -187,6 +204,15 @@ def save_tracked_users():
         logger.info(f"Saved {len(tracked_users)} tracked users to {USERS_FILE}")
     except Exception as e:
         logger.error(f"Error saving tracked users to {USERS_FILE}: {e}")
+
+def get_base_series_name(title: str) -> str:
+    """Extracts the base name of a series from its full title."""
+    if not title:
+        return ""
+    # This regex splits the title by "Season X" or "സീസൺ X" and takes the first part.
+    # It's a reliable way to get the base name for the current database structure.
+    base_name = re.split(r'\s+Season\s+\d|\s+സീസൺ\s+\d', title, 1, re.IGNORECASE)[0]
+    return base_name.strip()
 
 def add_user(user_id: int):
     """Add user to tracked users if not already present."""
@@ -632,8 +658,20 @@ def format_movie_details(entry: Dict, imdb_id: str) -> str:
         message += f"📺 **Series Information:**\n"
         if entry.get('season_number'):
             message += f"• Season: {entry['season_number']}\n"
-        if entry.get('total_seasons'):
-            message += f"• Total Seasons Available: {entry['total_seasons']}\n"
+
+        # Dynamically calculate total seasons since the DB value is unreliable
+        base_name = get_base_series_name(entry.get('title', ''))
+        if base_name:
+            total_seasons_count = 0
+            for db_entry in db.values():
+                if db_entry.get('is_series'):
+                    db_base_name = get_base_series_name(db_entry.get('title', ''))
+                    if db_base_name and db_base_name.lower() == base_name.lower():
+                        total_seasons_count += 1
+
+            if total_seasons_count > 0:
+                message += f"• Total Seasons Available: {total_seasons_count}\n"
+
         message += "\n"
 
     # Synopsis
@@ -1054,30 +1092,38 @@ All admin commands are restricted to bot owner only."""
                             'parse_mode': 'Markdown'
                         }
 
-                # Check if it's a series search (multiple seasons)
-                series_seasons = {}
-                series_name = None
-
-                for result in results[:5]:  # Check first 5 results
+                # New logic to detect and group series by base name
+                series_groups = {}
+                for result in results:
                     entry = result['entry']
-                    if entry.get('is_series') and entry.get('series_name'):
-                        current_series = entry['series_name']
-                        if not series_name:
-                            series_name = current_series
-
-                        if current_series.lower() == series_name.lower():
+                    if entry.get('is_series'):
+                        # Use the title to get a consistent base name
+                        base_name = get_base_series_name(entry.get('title', ''))
+                        if base_name:
+                            if base_name not in series_groups:
+                                series_groups[base_name] = {}
                             season_num = entry.get('season_number', 1)
-                            series_seasons[season_num] = result['imdb_id']
+                            # Avoid overwriting a season if multiple entries exist for it
+                            if season_num not in series_groups[base_name]:
+                                series_groups[base_name][season_num] = result['imdb_id']
 
-                # If multiple seasons found, show season selector
-                if len(series_seasons) > 1:
-                    keyboard = create_series_seasons_keyboard(series_seasons)
-                    return {
-                        'chat_id': chat_id,
-                        'text': f"📺 **{series_name}**\n\nFound {len(series_seasons)} seasons available. Select a season:",
-                        'reply_markup': keyboard,
-                        'parse_mode': 'Markdown'
-                    }
+                # Find the most likely series candidate (the one with the most seasons)
+                if series_groups:
+                    # Find the series with the most seasons in the search results
+                    best_series_name = max(series_groups, key=lambda k: len(series_groups[k]))
+                    best_series_seasons = series_groups[best_series_name]
+
+                    # If we found a series with multiple seasons, show the season selector
+                    if len(best_series_seasons) > 1:
+                        keyboard = create_series_seasons_keyboard(best_series_seasons)
+                        # The series name might have Malayalam text, which is fine
+                        display_name = best_series_name
+                        return {
+                            'chat_id': chat_id,
+                            'text': f"📺 **{display_name}**\n\nFound {len(best_series_seasons)} seasons. Please select one:",
+                            'reply_markup': keyboard,
+                            'parse_mode': 'Markdown'
+                        }
 
                 # Show search results
                 keyboard = create_search_results_keyboard(results)
