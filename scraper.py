@@ -15,7 +15,7 @@ BASE_URL = "https://malayalamsubtitles.org"
 RELEASES_URL = f"{BASE_URL}/releases/"
 # Maximum number of pages to scrape (default: 300)
 # This represents how many pages to check starting from page 1 (newest)
-MAX_PAGES = int(os.environ.get("SCRAPER_MAX_PAGES", "300"))
+MAX_PAGES = int(os.environ.get("SCRAPER_MAX_PAGES", "6"))
 HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
 
 # --- Helper Functions ---
