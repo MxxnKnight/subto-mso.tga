@@ -584,8 +584,8 @@ def create_series_seasons_keyboard(seasons: Dict[int, str]) -> Dict:
     keyboard.append([{'text': ' Close', 'callback_data': 'menu_close'}])
     return {'inline_keyboard': keyboard}
 
-def format_movie_details(entry: Dict, imdb_id: str) -> str:
-    """Format movie/series details for display."""
+def format_movie_details(entry: Dict, imdb_id: str) -> (str, str):
+    """Formats movie/series details into two parts: core info and synopsis."""
 
     def get_display_value(value):
         """Safely parse stringified dicts and return the 'name' value."""
@@ -609,10 +609,18 @@ def format_movie_details(entry: Dict, imdb_id: str) -> str:
     else:
         title_with_year = title
 
-    message = f"🎬 **{title_with_year}**\n\n"
+    core_details_message = f"🎬 **{title_with_year}**\n\n"
 
-    if entry.get('msone_release_number'):
-        message += f"🆔 MSOne Release: {entry['msone_release_number']}\n\n"
+    # Use .get() to avoid KeyError and handle cases where the value might be a dict
+    msone_release_val = entry.get('msone_release')
+    if msone_release_val:
+        if isinstance(msone_release_val, dict):
+            display_val = msone_release_val.get('name', '')
+        else:
+            display_val = str(msone_release_val)
+
+        if display_val:
+            core_details_message += f"🆔 MSOne Release: {display_val}\n\n"
 
     details = []
     fields_to_format = [
@@ -634,22 +642,23 @@ def format_movie_details(entry: Dict, imdb_id: str) -> str:
                 details.append(f"{field_label} {display_value}")
 
     if details:
-        message += "\n".join(details) + "\n\n"
+        core_details_message += "\n".join(details) + "\n\n"
 
     # Series information
     if entry.get('is_series'):
-        message += f"📺 **Series Information:**\n"
+        core_details_message += f"📺 **Series Information:**\n"
         if entry.get('season_number'):
-            message += f"• Season: {entry['season_number']}\n"
+            core_details_message += f"• Season: {entry['season_number']}\n"
         if entry.get('total_seasons'):
-            message += f"• Total Seasons Available: {entry['total_seasons']}\n"
-        message += "\n"
+            core_details_message += f"• Total Seasons Available: {entry['total_seasons']}\n"
+        core_details_message += "\n"
 
     # Synopsis
+    synopsis_text = ""
     if entry.get('descriptionMalayalam') and entry['descriptionMalayalam'] != 'No description available':
-        message += f"📖 **Synopsis:**\n{entry['descriptionMalayalam']}\n\n"
+        synopsis_text = f"📖 **Synopsis:**\n{entry['descriptionMalayalam']}"
 
-    return message
+    return core_details_message, synopsis_text
 
 def create_detail_keyboard(entry: Dict, imdb_id: str) -> Dict:
     """Create keyboard for movie detail page."""
@@ -754,19 +763,8 @@ async def handle_callback_query(callback_data: str, message_data: dict, chat_id:
             imdb_id = callback_data.replace('view_', '')
             if imdb_id in db:
                 entry = db[imdb_id]
-                detail_text = format_movie_details(entry, imdb_id)
                 keyboard = create_detail_keyboard(entry, imdb_id)
                 poster_url = entry.get('posterMalayalam')
-
-                # Prepare the response payload
-                response_payload = {
-                    'method': 'editMessageText',
-                    'chat_id': chat_id,
-                    'message_id': message_data.get('message_id'),
-                    'text': detail_text,
-                    'reply_markup': keyboard,
-                    'parse_mode': 'Markdown'
-                }
 
                 # If there's a poster, we need to delete the current message and send a new one with photo
                 if poster_url and poster_url.startswith('https'):
@@ -780,8 +778,21 @@ async def handle_callback_query(callback_data: str, message_data: dict, chat_id:
                         'imdb_id': imdb_id
                     }
                 else:
+                    # No poster, so send a single combined text message
                     logger.info(f"No poster for {imdb_id}, editing message with text only")
-                    return response_payload
+                    core_details, synopsis = format_movie_details(entry, imdb_id)
+                    full_text = core_details
+                    if synopsis:
+                        full_text += f"\n{synopsis}"
+
+                    return {
+                        'method': 'editMessageText',
+                        'chat_id': chat_id,
+                        'message_id': message_data.get('message_id'),
+                        'text': full_text,
+                        'reply_markup': keyboard,
+                        'parse_mode': 'Markdown'
+                    }
             else:
                 return {
                     'method': 'answerCallbackQuery',
@@ -879,36 +890,32 @@ async def handle_telegram_message(message_data: dict) -> Dict:
                         'message_id': response['message_id']
                     })
 
-                    # Send new message with photo
+                    # Send new message with photo (and a second message for synopsis)
                     entry = response['entry']
                     imdb_id = response['imdb_id']
-                    detail_text = format_movie_details(entry, imdb_id)
-                    keyboard = create_detail_keyboard(entry, imdb_id)
                     poster_url = entry.get('posterMalayalam')
 
-                    # Telegram API has a 1024 character limit for photo captions.
-                    # Truncate the caption if it's too long.
-                    CAPTION_MAX_LENGTH = 1024
-                    if len(detail_text) > CAPTION_MAX_LENGTH:
-                        # Truncate safely at a word boundary
-                        safe_truncate_length = CAPTION_MAX_LENGTH - 50  # Buffer for message
-                        last_space = detail_text.rfind(' ', 0, safe_truncate_length)
-                        if last_space != -1:
-                            detail_text = detail_text[:last_space] + "\n\n[...] _(Description truncated)_"
-                        else:
-                            # Hard cut if no space found
-                            detail_text = detail_text[:safe_truncate_length] + "\n\n[...] _(Description truncated)_"
+                    core_details, synopsis = format_movie_details(entry, imdb_id)
+                    keyboard = create_detail_keyboard(entry, imdb_id)
 
-                    new_message_payload = {
+                    # 1. Send the photo with core details as caption
+                    await send_telegram_message({
                         'method': 'sendPhoto',
                         'chat_id': response['chat_id'],
                         'photo': poster_url,
-                        'caption': detail_text,
+                        'caption': core_details,
+                        'parse_mode': 'Markdown'
+                    })
+
+                    # 2. Send the synopsis and keyboard in a separate message
+                    text_for_second_message = synopsis if synopsis else "More options:"
+                    await send_telegram_message({
+                        'method': 'sendMessage',
+                        'chat_id': response['chat_id'],
+                        'text': text_for_second_message,
                         'reply_markup': keyboard,
                         'parse_mode': 'Markdown'
-                    }
-
-                    await send_telegram_message(new_message_payload)
+                    })
                 else:
                     # Send the response (edit message, etc.)
                     await send_telegram_message(response)
