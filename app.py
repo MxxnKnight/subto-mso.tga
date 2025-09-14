@@ -619,19 +619,9 @@ def format_movie_details(entry: Dict, imdb_id: str) -> (str, str):
 
     core_details_message = f"🎬 **{title_with_year}**\n\n"
 
-    # Use .get() to avoid KeyError and handle cases where the value might be a dict
-    msone_release_val = entry.get('msone_release')
-    if msone_release_val:
-        if isinstance(msone_release_val, dict):
-            display_val = msone_release_val.get('name', '')
-        else:
-            display_val = str(msone_release_val)
-
-        if display_val:
-            core_details_message += f"🆔 MSOne Release: {display_val}\n\n"
-
     details = []
     fields_to_format = [
+        ("msone_release", "🆔 **MSOne Release:**"),
         ("language", "🗣️ **Language:**"),
         ("director", "🎬 **Director:**"),
         ("genre", "🎭 **Genre:**"),
