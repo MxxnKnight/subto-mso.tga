@@ -188,6 +188,15 @@ def save_tracked_users():
     except Exception as e:
         logger.error(f"Error saving tracked users to {USERS_FILE}: {e}")
 
+def get_base_series_name(title: str) -> str:
+    """Extracts the base name of a series from its full title."""
+    if not title:
+        return ""
+    # This regex splits the title by "Season X" or "സീസൺ X" and takes the first part.
+    # It's a reliable way to get the base name for the current database structure.
+    base_name = re.split(r'\s+Season\s+\d|\s+സീസൺ\s+\d', title, 1, re.IGNORECASE)[0]
+    return base_name.strip()
+
 def add_user(user_id: int):
     """Add user to tracked users if not already present."""
     if user_id not in tracked_users:
@@ -1054,30 +1063,38 @@ All admin commands are restricted to bot owner only."""
                             'parse_mode': 'Markdown'
                         }
 
-                # Check if it's a series search (multiple seasons)
-                series_seasons = {}
-                series_name = None
-
-                for result in results[:5]:  # Check first 5 results
+                # New logic to detect and group series by base name
+                series_groups = {}
+                for result in results:
                     entry = result['entry']
-                    if entry.get('is_series') and entry.get('series_name'):
-                        current_series = entry['series_name']
-                        if not series_name:
-                            series_name = current_series
-
-                        if current_series.lower() == series_name.lower():
+                    if entry.get('is_series'):
+                        # Use the title to get a consistent base name
+                        base_name = get_base_series_name(entry.get('title', ''))
+                        if base_name:
+                            if base_name not in series_groups:
+                                series_groups[base_name] = {}
                             season_num = entry.get('season_number', 1)
-                            series_seasons[season_num] = result['imdb_id']
+                            # Avoid overwriting a season if multiple entries exist for it
+                            if season_num not in series_groups[base_name]:
+                                series_groups[base_name][season_num] = result['imdb_id']
 
-                # If multiple seasons found, show season selector
-                if len(series_seasons) > 1:
-                    keyboard = create_series_seasons_keyboard(series_seasons)
-                    return {
-                        'chat_id': chat_id,
-                        'text': f"📺 **{series_name}**\n\nFound {len(series_seasons)} seasons available. Select a season:",
-                        'reply_markup': keyboard,
-                        'parse_mode': 'Markdown'
-                    }
+                # Find the most likely series candidate (the one with the most seasons)
+                if series_groups:
+                    # Find the series with the most seasons in the search results
+                    best_series_name = max(series_groups, key=lambda k: len(series_groups[k]))
+                    best_series_seasons = series_groups[best_series_name]
+
+                    # If we found a series with multiple seasons, show the season selector
+                    if len(best_series_seasons) > 1:
+                        keyboard = create_series_seasons_keyboard(best_series_seasons)
+                        # The series name might have Malayalam text, which is fine
+                        display_name = best_series_name
+                        return {
+                            'chat_id': chat_id,
+                            'text': f"📺 **{display_name}**\n\nFound {len(best_series_seasons)} seasons. Please select one:",
+                            'reply_markup': keyboard,
+                            'parse_mode': 'Markdown'
+                        }
 
                 # Show search results
                 keyboard = create_search_results_keyboard(results)

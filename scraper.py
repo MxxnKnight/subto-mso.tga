@@ -41,13 +41,27 @@ def extract_year(title):
 
 def extract_season_info(title):
     patterns = [r'Season\s*(\d+)', r'സീസൺ\s*(\d+)', r'S0?(\d+)', r'സീസണ്‍\s*(\d+)']
+    season_number = None
+    is_series = False
+
     for pattern in patterns:
         match = re.search(pattern, title, re.IGNORECASE)
         if match:
-            return {'is_series': True, 'season_number': int(match.group(1)), 'series_name': re.sub(pattern, '', title, flags=re.IGNORECASE).strip()}
-    if any(keyword in title.lower() for keyword in ['season', 'series', 'സീസൺ', 'സീസണ്‍']):
-        return {'is_series': True, 'season_number': 1, 'series_name': title}
-    return {'is_series': False, 'season_number': None, 'series_name': None}
+            season_number = int(match.group(1))
+            is_series = True
+            break
+
+    if not is_series and any(keyword in title.lower() for keyword in ['season', 'series', 'സീസൺ', 'സീസണ്‍']):
+        is_series = True
+        season_number = 1
+
+    if not is_series:
+        return {'is_series': False, 'season_number': None, 'series_name': None}
+
+    # This is the fix. Use the reliable split method to get the base name.
+    series_name = re.split(r'\s+Season\s+\d|\s+സീസൺ\s+\d', title, 1, re.IGNORECASE)[0].strip()
+
+    return {'is_series': True, 'season_number': season_number, 'series_name': series_name}
 
 def scrape_detail_page(url):
     """Scrapes comprehensive details from a movie/series page."""
@@ -509,15 +523,36 @@ def main():
         time.sleep(0.2)
 
     logger.info(f"Scraping finished. Added {newly_added_count} new entries. Total: {len(final_db)}")
+    logger.info("Post-processing series information...")
 
-    series_db = {}
+    # --- New Series Post-Processing Logic ---
+
+    # 1. Group all seasons by their base series name
+    series_grouping = {}
     for unique_id, entry in final_db.items():
         if entry.get('is_series') and entry.get('series_name'):
-            series_name = entry['series_name']
-            if series_name not in series_db: series_db[series_name] = {}
-            season_num = entry.get('season_number', 1)
-            series_db[series_name][season_num] = unique_id
-            entry['total_seasons'] = len(series_db[series_name])
+            base_name = entry['series_name'] # This now comes correctly from extract_season_info
+            if base_name not in series_grouping:
+                series_grouping[base_name] = []
+            series_grouping[base_name].append(unique_id)
+
+    # 2. Update each entry with the correct total_seasons count
+    for base_name, season_ids in series_grouping.items():
+        total_seasons = len(season_ids)
+        for unique_id in season_ids:
+            if unique_id in final_db:
+                final_db[unique_id]['total_seasons'] = total_seasons
+
+    # 3. Create the clean series_db for series_db.json
+    series_db = {}
+    for base_name, season_ids in series_grouping.items():
+        series_db[base_name] = {}
+        for unique_id in season_ids:
+            if unique_id in final_db:
+                season_num = final_db[unique_id].get('season_number', 1)
+                series_db[base_name][str(season_num)] = unique_id
+
+    logger.info(f"Post-processing complete. Found {len(series_db)} unique series.")
 
     try:
         # Safely backup and save files
