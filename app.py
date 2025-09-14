@@ -1246,36 +1246,36 @@ async def startup_event():
     load_tracked_users()
 
     # Set webhook if token is available
-    if TOKEN:
-        import aiohttp
+    # if TOKEN:
+    #     import aiohttp
 
-        try:
-            base_url = os.environ.get("RENDER_EXTERNAL_URL", "https://subto-mso-tga.onrender.com")
-            webhook_url = f"{base_url}/telegram"
+    #     try:
+    #         base_url = os.environ.get("RENDER_EXTERNAL_URL", "https://subto-mso-tga.onrender.com")
+    #         webhook_url = f"{base_url}/telegram"
 
-            url = f"https://api.telegram.org/bot{TOKEN}/setWebhook"
-            data = {
-                "url": webhook_url,
-                "secret_token": WEBHOOK_SECRET,
-                "drop_pending_updates": True
-            }
+    #         url = f"https://api.telegram.org/bot{TOKEN}/setWebhook"
+    #         data = {
+    #             "url": webhook_url,
+    #             "secret_token": WEBHOOK_SECRET,
+    #             "drop_pending_updates": True
+    #         }
 
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, json=data) as resp:
-                    if resp.status == 200:
-                        logger.info(f"Webhook set to {webhook_url}")
+    #         async with aiohttp.ClientSession() as session:
+    #             async with session.post(url, json=data) as resp:
+    #                 if resp.status == 200:
+    #                     logger.info(f"Webhook set to {webhook_url}")
 
-                        # Notify owner
-                        if OWNER_ID:
-                            await send_telegram_message({
-                                'chat_id': OWNER_ID,
-                                'text': '🟢 **Enhanced Bot v2.0 is Online!**\n\n✅ Database loaded successfully\n✅ All features activated\n✅ Ready to serve users',
-                                'parse_mode': 'Markdown'
-                            })
-                    else:
-                        logger.error(f"Failed to set webhook: {resp.status}")
-        except Exception as e:
-            logger.error(f"Error setting webhook: {e}")
+    #                     # Notify owner
+    #                     if OWNER_ID:
+    #                         await send_telegram_message({
+    #                             'chat_id': OWNER_ID,
+    #                             'text': '🟢 **Enhanced Bot v2.0 is Online!**\n\n✅ Database loaded successfully\n✅ All features activated\n✅ Ready to serve users',
+    #                             'parse_mode': 'Markdown'
+    #                         })
+    #                 else:
+    #                     logger.error(f"Failed to set webhook: {resp.status}")
+    #     except Exception as e:
+    #         logger.error(f"Error setting webhook: {e}")
 
 # --- API Endpoints ---
 @app.get("/")
