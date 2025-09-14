@@ -217,6 +217,10 @@ def scrape_detail_page(url):
         if 'msone_release' not in details:
             content_text = soup.get_text() if soup else ''
             msone_patterns = [
+                # New, more specific patterns based on user feedback
+                r'എംസോൺ റിലീസ്\s*[-–:]?\s*(\d+)',
+                r'MSOne Release\s*[-–:]?\s*(\d+)',
+                # Existing patterns
                 r'MSOne\s*:?\s*(\w*\d+)',
                 r'MS One\s*:?\s*(\w*\d+)',
                 r'Release\s*:?\s*(\w*\d+)',
