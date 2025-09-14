@@ -128,7 +128,7 @@ By continuing to use this bot, you accept these terms.
 """
 
 def load_databases():
-    """Load both main and series databases and rebuild series_db for consistency."""
+    """Load both main and series databases."""
     global db, series_db
 
     # Load main database
@@ -140,31 +140,14 @@ def load_databases():
         logger.error(f"Error loading main database from {DB_FILE}: {e}")
         db = {}
 
-    # Load the original series database (even if malformed)
+    # Load series database
     try:
         with open(SERIES_DB_FILE, 'r', encoding='utf-8') as f:
-            # We don't use this directly, but we log its size for comparison
-            original_series_db = json.load(f)
-            logger.info(f"Loaded original series database: {len(original_series_db)} entries from {SERIES_DB_FILE}")
+            series_db = json.load(f)
+            logger.info(f"Loaded series database: {len(series_db)} series from {SERIES_DB_FILE}")
     except Exception as e:
-        logger.warning(f"Could not load original series database from {SERIES_DB_FILE}: {e}")
-
-    # Rebuild the series_db in memory from the main db for correctness
-    logger.info("Rebuilding series database from main DB for consistency...")
-    new_series_db = {}
-    for imdb_id, entry in db.items():
-        if entry.get('is_series'):
-            base_name = get_base_series_name(entry.get('title', ''))
-            if base_name:
-                if base_name not in new_series_db:
-                    new_series_db[base_name] = {}
-
-                season_num = entry.get('season_number')
-                if season_num:
-                    new_series_db[base_name][str(season_num)] = imdb_id
-
-    series_db = new_series_db
-    logger.info(f"Successfully rebuilt series database in memory: {len(series_db)} unique series found.")
+        logger.warning(f"Series database not found at {SERIES_DB_FILE}: {e}")
+        series_db = {}
 
 def load_tracked_users():
     """Load tracked users from file."""
@@ -658,20 +641,8 @@ def format_movie_details(entry: Dict, imdb_id: str) -> str:
         message += f"📺 **Series Information:**\n"
         if entry.get('season_number'):
             message += f"• Season: {entry['season_number']}\n"
-
-        # Dynamically calculate total seasons since the DB value is unreliable
-        base_name = get_base_series_name(entry.get('title', ''))
-        if base_name:
-            total_seasons_count = 0
-            for db_entry in db.values():
-                if db_entry.get('is_series'):
-                    db_base_name = get_base_series_name(db_entry.get('title', ''))
-                    if db_base_name and db_base_name.lower() == base_name.lower():
-                        total_seasons_count += 1
-
-            if total_seasons_count > 0:
-                message += f"• Total Seasons Available: {total_seasons_count}\n"
-
+        if entry.get('total_seasons'):
+            message += f"• Total Seasons Available: {entry['total_seasons']}\n"
         message += "\n"
 
     # Synopsis
@@ -914,6 +885,19 @@ async def handle_telegram_message(message_data: dict) -> Dict:
                     detail_text = format_movie_details(entry, imdb_id)
                     keyboard = create_detail_keyboard(entry, imdb_id)
                     poster_url = entry.get('posterMalayalam')
+
+                    # Telegram API has a 1024 character limit for photo captions.
+                    # Truncate the caption if it's too long.
+                    CAPTION_MAX_LENGTH = 1024
+                    if len(detail_text) > CAPTION_MAX_LENGTH:
+                        # Truncate safely at a word boundary
+                        safe_truncate_length = CAPTION_MAX_LENGTH - 50  # Buffer for message
+                        last_space = detail_text.rfind(' ', 0, safe_truncate_length)
+                        if last_space != -1:
+                            detail_text = detail_text[:last_space] + "\n\n[...] _(Description truncated)_"
+                        else:
+                            # Hard cut if no space found
+                            detail_text = detail_text[:safe_truncate_length] + "\n\n[...] _(Description truncated)_"
 
                     new_message_payload = {
                         'method': 'sendPhoto',
