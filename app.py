@@ -702,10 +702,9 @@ def create_detail_keyboard(entry: Dict, imdb_id: str) -> Dict:
             'callback_data': 'back_search'
         })
     
-    # Add close button
-    keyboard_row.append({'text': ' Close', 'callback_data': 'menu_close'})
-    
-    keyboard.append(keyboard_row)
+    # The close button is no longer needed in this view.
+    if keyboard_row:
+        keyboard.append(keyboard_row)
 
     return {'inline_keyboard': keyboard}
 
@@ -937,9 +936,6 @@ async def handle_telegram_message(message_data: dict) -> Dict:
                             'reply_markup': keyboard,
                             'parse_mode': 'Markdown'
                         })
-                else:
-                    # Send the response (edit message, etc.)
-                    await send_telegram_message(response)
                 elif response.get('method') == 'delete_both':
                     await asyncio.gather(
                         send_telegram_message({
@@ -953,6 +949,9 @@ async def handle_telegram_message(message_data: dict) -> Dict:
                             'message_id': response['reply_to_message_id']
                         })
                     )
+                else:
+                    # Send the response for all other methods (edit message, etc.)
+                    await send_telegram_message(response)
 
                 # Answer the callback query to remove the loading state
                 await send_telegram_message({
