@@ -1076,38 +1076,36 @@ All admin commands are restricted to bot owner only."""
                             'parse_mode': 'Markdown'
                         }
 
-                # New logic to detect and group series by base name
-                series_groups = {}
-                for result in results:
-                    entry = result['entry']
-                    if entry.get('is_series'):
-                        # Use the title to get a consistent base name
-                        base_name = get_base_series_name(entry.get('title', ''))
-                        if base_name:
-                            if base_name not in series_groups:
-                                series_groups[base_name] = {}
-                            season_num = entry.get('season_number', 1)
-                            # Avoid overwriting a season if multiple entries exist for it
-                            if season_num not in series_groups[base_name]:
-                                series_groups[base_name][season_num] = result['imdb_id']
+                # New, corrected logic for series handling
+                if results:
+                    # The first result is the most relevant one.
+                    most_relevant_entry = results[0]['entry']
 
-                # Find the most likely series candidate (the one with the most seasons)
-                if series_groups:
-                    # Find the series with the most seasons in the search results
-                    best_series_name = max(series_groups, key=lambda k: len(series_groups[k]))
-                    best_series_seasons = series_groups[best_series_name]
+                    if most_relevant_entry.get('is_series'):
+                        # Get the base name of the most relevant series
+                        base_name_to_show = get_base_series_name(most_relevant_entry.get('title', ''))
 
-                    # If we found a series with multiple seasons, show the season selector
-                    if len(best_series_seasons) > 1:
-                        keyboard = create_series_seasons_keyboard(best_series_seasons)
-                        # The series name might have Malayalam text, which is fine
-                        display_name = best_series_name
-                        return {
-                            'chat_id': chat_id,
-                            'text': f"📺 **{display_name}**\n\nFound {len(best_series_seasons)} seasons. Please select one:",
-                            'reply_markup': keyboard,
-                            'parse_mode': 'Markdown'
-                        }
+                        if base_name_to_show:
+                            # Group all seasons for *only this specific series* from the results
+                            seasons_for_this_series = {}
+                            for result in results:
+                                entry = result['entry']
+                                if entry.get('is_series'):
+                                    base_name = get_base_series_name(entry.get('title', ''))
+                                    if base_name.lower() == base_name_to_show.lower():
+                                        season_num = entry.get('season_number', 1)
+                                        if season_num not in seasons_for_this_series:
+                                            seasons_for_this_series[str(season_num)] = result['imdb_id']
+
+                            # If we found multiple seasons for the most relevant series, show selector
+                            if len(seasons_for_this_series) > 1:
+                                keyboard = create_series_seasons_keyboard(seasons_for_this_series)
+                                return {
+                                    'chat_id': chat_id,
+                                    'text': f"📺 **{base_name_to_show}**\n\nI found {len(seasons_for_this_series)} seasons for this series. Please select one:",
+                                    'reply_markup': keyboard,
+                                    'parse_mode': 'Markdown'
+                                }
 
                 # Show search results
                 keyboard = create_search_results_keyboard(results)
