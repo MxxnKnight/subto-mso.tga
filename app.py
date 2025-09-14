@@ -5,6 +5,7 @@ import asyncio
 import zipfile
 import tempfile
 import ast
+import unicodedata
 from http import HTTPStatus
 from typing import Dict, Any, List, Optional
 from urllib.parse import urlparse
@@ -313,11 +314,12 @@ async def broadcast_message(message_data: dict, admin_chat_id: int) -> Dict:
     }
 
 def search_content(query: str) -> List[Dict]:
-    """Enhanced search with series support."""
+    """Enhanced search with series support and Unicode normalization."""
     if not db or not query:
         return []
 
-    query_lower = query.lower().strip()
+    # Normalize query for consistent matching
+    query_lower = unicodedata.normalize('NFC', query.lower().strip())
     results = []
 
     # Direct IMDb ID search
@@ -327,8 +329,9 @@ def search_content(query: str) -> List[Dict]:
 
     # Search in main database
     for imdb_id, entry in db.items():
-        title = entry.get('title', '').lower()
-        series_name = entry.get('series_name', '').lower() if entry.get('series_name') else ''
+        # Normalize titles for consistent matching
+        title = unicodedata.normalize('NFC', entry.get('title', '').lower())
+        series_name = unicodedata.normalize('NFC', entry.get('series_name', '').lower()) if entry.get('series_name') else ''
 
         # Check various fields for matches
         if (query_lower in title or
@@ -348,21 +351,26 @@ def search_content(query: str) -> List[Dict]:
     return results[:20]  # Limit results
 
 def calculate_relevance(query: str, title: str, series_name: str) -> int:
-    """Calculate search relevance score."""
+    """Calculate search relevance score with Unicode normalization."""
+    # Ensure all inputs are normalized for consistent scoring
+    norm_query = unicodedata.normalize('NFC', query)
+    norm_title = unicodedata.normalize('NFC', title)
+    norm_series_name = unicodedata.normalize('NFC', series_name)
+
     score = 0
-    query_words = query.split()
+    query_words = norm_query.split()
 
     # Exact title match gets highest score
-    if query in title:
+    if norm_query in norm_title:
         score += 100
-    if series_name and query in series_name:
+    if norm_series_name and norm_query in norm_series_name:
         score += 100
 
     # Word matches
     for word in query_words:
-        if word in title:
+        if word in norm_title:
             score += 10
-        if series_name and word in series_name:
+        if norm_series_name and word in norm_series_name:
             score += 10
 
     return score
@@ -753,6 +761,16 @@ async def handle_callback_query(callback_data: str, message_data: dict, chat_id:
                 }
             elif menu_type == 'close':
                 logger.info("Processing close menu")
+                if 'reply_to_message' in message_data:
+                    # Return a special payload to delete both messages
+                    return {
+                        'method': 'delete_both',
+                        'chat_id': chat_id,
+                        'main_message_id': message_data['message_id'],
+                        'reply_to_message_id': message_data['reply_to_message']['message_id']
+                    }
+
+                # Fallback for old behavior (deleting a single message)
                 return {
                     'method': 'deleteMessage',
                     'chat_id': chat_id,
@@ -899,7 +917,7 @@ async def handle_telegram_message(message_data: dict) -> Dict:
                     keyboard = create_detail_keyboard(entry, imdb_id)
 
                     # 1. Send the photo with core details as caption
-                    await send_telegram_message({
+                    photo_message = await send_telegram_message({
                         'method': 'sendPhoto',
                         'chat_id': response['chat_id'],
                         'photo': poster_url,
@@ -907,18 +925,34 @@ async def handle_telegram_message(message_data: dict) -> Dict:
                         'parse_mode': 'Markdown'
                     })
 
-                    # 2. Send the synopsis and keyboard in a separate message
-                    text_for_second_message = synopsis if synopsis else "More options:"
-                    await send_telegram_message({
-                        'method': 'sendMessage',
-                        'chat_id': response['chat_id'],
-                        'text': text_for_second_message,
-                        'reply_markup': keyboard,
-                        'parse_mode': 'Markdown'
-                    })
+                    # 2. Send the synopsis and keyboard as a reply to the photo message
+                    photo_message_id = photo_message.get('result', {}).get('message_id')
+                    if photo_message_id:
+                        text_for_second_message = synopsis if synopsis else "More options:"
+                        await send_telegram_message({
+                            'method': 'sendMessage',
+                            'chat_id': response['chat_id'],
+                            'text': text_for_second_message,
+                            'reply_to_message_id': photo_message_id,
+                            'reply_markup': keyboard,
+                            'parse_mode': 'Markdown'
+                        })
                 else:
                     # Send the response (edit message, etc.)
                     await send_telegram_message(response)
+                elif response.get('method') == 'delete_both':
+                    await asyncio.gather(
+                        send_telegram_message({
+                            'method': 'deleteMessage',
+                            'chat_id': response['chat_id'],
+                            'message_id': response['main_message_id']
+                        }),
+                        send_telegram_message({
+                            'method': 'deleteMessage',
+                            'chat_id': response['chat_id'],
+                            'message_id': response['reply_to_message_id']
+                        })
+                    )
 
                 # Answer the callback query to remove the loading state
                 await send_telegram_message({
