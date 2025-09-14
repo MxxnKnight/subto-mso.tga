@@ -67,5 +67,7 @@ The project uses a decoupled architecture to ensure stability and cost-effective
 
 -  **Searching Movies/Series**
     - if user search a movie query `eg: Dune` by sending message to bot,bot reply with the searched query message and its inline buttons that contains its callback for open `detailed message`. This bot reply known as search results
-    - `Search results` message has the text to user query and list of finded entries in(from db.json) in inline buttons.
-    - 
+    - `Search results` message has the text to user query and list of finded entries in(from db.json) inline buttons.Its showed on the query words matching results.
+    - when user click a button for a entry ,the search results message get deleted and bot send the selected query entry's detailed message.It contains poster image,title, release number,year, director, language, translator, genres, rating, certification, synopsis etc. the detailed message also include download button for download the subtitle
+    - Download button: when user clicks download button,bot download the subtitle from the link in db.json .since movie has one srt file bot upload it and use filename as caption, since series has multiple subtitle(season full subtitles in zip) 
+bot download it and unzip before uploading to user,then send it to user,it also use filename as each file caption.
