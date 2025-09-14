@@ -702,9 +702,10 @@ def create_detail_keyboard(entry: Dict, imdb_id: str) -> Dict:
             'callback_data': 'back_search'
         })
     
-    # The close button is no longer needed in this view.
-    if keyboard_row:
-        keyboard.append(keyboard_row)
+    # Add close button
+    keyboard_row.append({'text': ' Close', 'callback_data': 'menu_close'})
+
+    keyboard.append(keyboard_row)
 
     return {'inline_keyboard': keyboard}
 
@@ -759,17 +760,28 @@ async def handle_callback_query(callback_data: str, message_data: dict, chat_id:
                     'message_id': message_data.get('message_id')
                 }
             elif menu_type == 'close':
-                logger.info("Processing close menu")
-                if 'reply_to_message' in message_data:
-                    # Return a special payload to delete both messages
-                    return {
-                        'method': 'delete_both',
-                        'chat_id': chat_id,
-                        'main_message_id': message_data['message_id'],
-                        'reply_to_message_id': message_data['reply_to_message']['message_id']
-                    }
+                logger.info("Processing close menu for a single message")
+                return {
+                    'method': 'deleteMessage',
+                    'chat_id': chat_id,
+                    'message_id': message_data.get('message_id')
+                }
 
-                # Fallback for old behavior (deleting a single message)
+        elif callback_data.startswith('close_'):
+            logger.info("Processing custom close menu for two messages")
+            try:
+                parts = callback_data.split('_')
+                photo_id = int(parts[1])
+                synopsis_id = int(parts[2])
+                return {
+                    'method': 'delete_both',
+                    'chat_id': chat_id,
+                    'main_message_id': synopsis_id,
+                    'reply_to_message_id': photo_id  # Reusing the key for the photo id
+                }
+            except (IndexError, ValueError) as e:
+                logger.error(f"Error parsing close callback data: {callback_data} - {e}")
+                # Fallback to deleting just the current message
                 return {
                     'method': 'deleteMessage',
                     'chat_id': chat_id,
@@ -907,15 +919,13 @@ async def handle_telegram_message(message_data: dict) -> Dict:
                         'message_id': response['message_id']
                     })
 
-                    # Send new message with photo (and a second message for synopsis)
+                    # --- New "Send-Send-Edit" Flow ---
                     entry = response['entry']
                     imdb_id = response['imdb_id']
                     poster_url = entry.get('posterMalayalam')
-
                     core_details, synopsis = format_movie_details(entry, imdb_id)
-                    keyboard = create_detail_keyboard(entry, imdb_id)
 
-                    # 1. Send the photo with core details as caption
+                    # 1. Send the photo message
                     photo_message = await send_telegram_message({
                         'method': 'sendPhoto',
                         'chat_id': response['chat_id'],
@@ -923,18 +933,33 @@ async def handle_telegram_message(message_data: dict) -> Dict:
                         'caption': core_details,
                         'parse_mode': 'Markdown'
                     })
-
-                    # 2. Send the synopsis and keyboard as a reply to the photo message
                     photo_message_id = photo_message.get('result', {}).get('message_id')
-                    if photo_message_id:
-                        text_for_second_message = synopsis if synopsis else "More options:"
+
+                    # 2. Send the synopsis message (without keyboard)
+                    synopsis_message = await send_telegram_message({
+                        'method': 'sendMessage',
+                        'chat_id': response['chat_id'],
+                        'text': synopsis if synopsis else "No synopsis available.",
+                        'parse_mode': 'Markdown'
+                    })
+                    synopsis_message_id = synopsis_message.get('result', {}).get('message_id')
+
+                    # 3. Dynamically create keyboard and edit the synopsis message
+                    if photo_message_id and synopsis_message_id:
+                        # Re-create the keyboard with a custom close button
+                        keyboard_data = create_detail_keyboard(entry, imdb_id)
+                        # Find the row with the 'menu_close' button and replace its callback_data
+                        for row in keyboard_data['inline_keyboard']:
+                            for button in row:
+                                if button.get('callback_data') == 'menu_close':
+                                    button['callback_data'] = f"close_{photo_message_id}_{synopsis_message_id}"
+                                    break
+
                         await send_telegram_message({
-                            'method': 'sendMessage',
+                            'method': 'editMessageReplyMarkup',
                             'chat_id': response['chat_id'],
-                            'text': text_for_second_message,
-                            'reply_to_message_id': photo_message_id,
-                            'reply_markup': keyboard,
-                            'parse_mode': 'Markdown'
+                            'message_id': synopsis_message_id,
+                            'reply_markup': keyboard_data
                         })
                 elif response.get('method') == 'delete_both':
                     await asyncio.gather(
