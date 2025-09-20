@@ -69,3 +69,12 @@ If you don't want to wait for the daily automatic run, you can manually trigger 
 2.  Click on the **"Actions"** tab.
 3.  In the left sidebar, click on the **"Daily Scraper"** workflow.
 4.  Click the **"Run workflow"** dropdown button and then the green **"Run workflow"** button to start the process.
+
+## Admin Commands
+
+If you have set the `OWNER_ID` environment variable, you can use the following commands in a direct message with the bot:
+
+-   **`/delete <imdb_id>`**: Deletes an entry from the bot's database. This is useful for removing broken or incorrect entries. The change is immediate but will be temporary until the next daily scraper run makes it permanent.
+    -   Example: `/delete tt1234567`
+-   **`/rescrape <imdb_id>`**: Manually triggers a re-scrape of a specific movie or series page. This is useful for updating an ongoing series with a new subtitle file without waiting for the automated weekly re-scrape.
+    -   Example: `/rescrape tt1234567-S1`

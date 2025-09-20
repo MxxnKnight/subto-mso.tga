@@ -11,6 +11,7 @@ from typing import Dict, Any, List, Optional
 from urllib.parse import urlparse
 import re
 import aiofiles
+from scraper import scrape_detail_page
 
 from fastapi import FastAPI, Request, Response, HTTPException, Query
 
@@ -193,6 +194,44 @@ async def save_tracked_users():
         logger.info(f"Saved {len(tracked_users)} tracked users to {USERS_FILE}")
     except Exception as e:
         logger.error(f"Error saving tracked users to {USERS_FILE}: {e}")
+
+def rebuild_series_db():
+    """Rebuild the series_db from the main db."""
+    global series_db
+    logger.info("Rebuilding series database from main db...")
+    series_db = {}
+    series_grouping = {}
+    for unique_id, entry in db.items():
+        if entry.get('is_series') and entry.get('series_name'):
+            base_name = entry['series_name']
+            if base_name not in series_grouping:
+                series_grouping[base_name] = []
+            series_grouping[base_name].append(unique_id)
+
+    for base_name, season_ids in series_grouping.items():
+        series_db[base_name] = {}
+        for unique_id in season_ids:
+            if unique_id in db:
+                season_num = db[unique_id].get('season_number', 1)
+                series_db[base_name][str(season_num)] = unique_id
+    logger.info(f"Series database rebuilt. Found {len(series_db)} unique series.")
+
+async def save_databases_async():
+    """Save both main and series databases asynchronously."""
+    rebuild_series_db() # Ensure series_db is consistent before saving
+    try:
+        async with aiofiles.open(DB_FILE, 'w', encoding='utf-8') as f:
+            await f.write(json.dumps(db, indent=2, ensure_ascii=False))
+        logger.info(f"Saved main database with {len(db)} entries to {DB_FILE}")
+    except Exception as e:
+        logger.error(f"Error saving main database to {DB_FILE}: {e}")
+
+    try:
+        async with aiofiles.open(SERIES_DB_FILE, 'w', encoding='utf-8') as f:
+            await f.write(json.dumps(series_db, indent=2, ensure_ascii=False))
+        logger.info(f"Saved series database with {len(series_db)} entries to {SERIES_DB_FILE}")
+    except Exception as e:
+        logger.error(f"Error saving series database to {SERIES_DB_FILE}: {e}")
 
 def get_base_series_name(title: str) -> str:
     """Extracts the base name of a series from its full title."""
@@ -1084,6 +1123,105 @@ All admin commands are restricted to bot owner only."""
                     'text': admin_help_text,
                     'parse_mode': 'Markdown'
                 }
+            elif text.startswith('/delete'):
+                parts = text.split()
+                if len(parts) < 2:
+                    return {
+                        'chat_id': chat_id,
+                        'text': "❌ Please provide an IMDb ID to delete. Usage: `/delete <imdb_id>`",
+                        'parse_mode': 'Markdown'
+                    }
+
+                imdb_id_to_delete = parts[1]
+
+                if imdb_id_to_delete in db:
+                    deleted_entry_title = db[imdb_id_to_delete].get('title', 'Unknown Title')
+                    del db[imdb_id_to_delete]
+
+                    await save_databases_async()
+
+                    return {
+                        'chat_id': chat_id,
+                        'text': f"✅ Successfully deleted **{deleted_entry_title}** (`{imdb_id_to_delete}`) from the database. The change is temporary and will be reverted on next deploy unless the scraper is run.",
+                        'parse_mode': 'Markdown'
+                    }
+                else:
+                    return {
+                        'chat_id': chat_id,
+                        'text': f"❌ Entry with IMDb ID `{imdb_id_to_delete}` not found in the database.",
+                        'parse_mode': 'Markdown'
+                    }
+            elif text.startswith('/rescrape'):
+                parts = text.split()
+                if len(parts) < 2:
+                    return {
+                        'chat_id': chat_id,
+                        'text': "❌ Please provide an IMDb ID to rescrape. Usage: `/rescrape <imdb_id>`",
+                        'parse_mode': 'Markdown'
+                    }
+
+                imdb_id_to_rescrape = parts[1]
+
+                if imdb_id_to_rescrape not in db:
+                    return {
+                        'chat_id': chat_id,
+                        'text': f"❌ Entry with IMDb ID `{imdb_id_to_rescrape}` not found in the database.",
+                        'parse_mode': 'Markdown'
+                    }
+
+                source_url = db[imdb_id_to_rescrape].get('source_url')
+                if not source_url:
+                    return {
+                        'chat_id': chat_id,
+                        'text': f"❌ Cannot rescrape. Source URL not found for `{imdb_id_to_rescrape}`.",
+                        'parse_mode': 'Markdown'
+                    }
+
+                status_message = await send_telegram_message({
+                    'chat_id': chat_id,
+                    'text': f"⏳ Rescraping **{db[imdb_id_to_rescrape].get('title', imdb_id_to_rescrape)}**..."
+                })
+                status_message_id = status_message.get('result', {}).get('message_id')
+
+                if not status_message_id:
+                     return {
+                        'chat_id': chat_id,
+                        'text': "❌ Could not send status message. Aborting rescrape.",
+                    }
+
+                try:
+                    loop = asyncio.get_event_loop()
+                    new_data = await loop.run_in_executor(None, scrape_detail_page, source_url)
+
+                    if new_data:
+                        db[imdb_id_to_rescrape] = new_data
+                        await save_databases_async()
+
+                        await send_telegram_message({
+                            'method': 'editMessageText',
+                            'chat_id': chat_id,
+                            'message_id': status_message_id,
+                            'text': f"✅ Successfully rescraped and updated **{new_data.get('title', imdb_id_to_rescrape)}**.",
+                            'parse_mode': 'Markdown'
+                        })
+                    else:
+                        await send_telegram_message({
+                            'method': 'editMessageText',
+                            'chat_id': chat_id,
+                            'message_id': status_message_id,
+                            'text': f"❌ Failed to rescrape `{imdb_id_to_rescrape}`. The scraper returned no data.",
+                            'parse_mode': 'Markdown'
+                        })
+                except Exception as e:
+                    logger.error(f"Error during rescrape: {e}")
+                    await send_telegram_message({
+                        'method': 'editMessageText',
+                        'chat_id': chat_id,
+                        'message_id': status_message_id,
+                        'text': f"❌ An error occurred while rescraping: `{e}`",
+                        'parse_mode': 'Markdown'
+                    })
+                return None
 
         # Regular commands
         if text.startswith('/start'):

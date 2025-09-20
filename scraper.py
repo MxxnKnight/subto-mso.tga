@@ -447,6 +447,7 @@ def scrape_detail_page(url):
 
 def main():
     """Main scraper function."""
+    from datetime import datetime, timedelta
     logger.info("Starting Malayalam subtitle scraper...")
 
     try:
@@ -456,6 +457,39 @@ def main():
         final_db = {}
         logger.info("No existing db.json found. Starting fresh.")
 
+    # --- Update old series entries ---
+    logger.info("Checking for and updating old series entries...")
+    update_count = 0
+    # Iterate over a copy of the items, so we can modify the dict
+    for unique_id, entry in list(final_db.items()):
+        # Only check entries that are series, as movies don't get updated zip files
+        if not entry.get('is_series'):
+            continue
+
+        scraped_at_str = entry.get('scraped_at')
+        if not scraped_at_str:
+            continue # Skip entries without a timestamp
+
+        try:
+            # Assuming scraped_at is in format 'YYYY-MM-DD HH:MM:SS'
+            scraped_at_date = datetime.strptime(scraped_at_str, '%Y-%m-%d %H:%M:%S')
+            if datetime.now() - scraped_at_date > timedelta(days=7):
+                logger.info(f"Series entry '{entry.get('title')}' is older than 7 days. Rescraping...")
+                source_url = entry.get('source_url')
+                if source_url:
+                    new_data = scrape_detail_page(source_url)
+                    if new_data:
+                        final_db[unique_id] = new_data
+                        update_count += 1
+                        time.sleep(0.2) # Be nice to their server
+        except ValueError:
+            logger.warning(f"Could not parse scraped_at timestamp for {unique_id}. Skipping.")
+            continue
+
+    logger.info(f"Finished updating old entries. Updated {update_count} entries.")
+
+    # --- Scrape for new entries ---
+    logger.info("Scraping for new entries...")
     # Start from the latest page (page 1) and work backwards
     # Page 1 is the latest page, and higher numbers are older pages
     START_PAGE = 1
