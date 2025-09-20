@@ -10,6 +10,7 @@ from http import HTTPStatus
 from typing import Dict, Any, List, Optional
 from urllib.parse import urlparse
 import re
+import aiofiles
 
 from fastapi import FastAPI, Request, Response, HTTPException, Query
 
@@ -32,6 +33,8 @@ db: Dict[str, Any] = {}
 series_db: Dict[str, Dict[int, str]] = {}
 tracked_users: set = set()
 USERS_FILE = os.environ.get("USERS_FILE", "users.json")
+LOG_GROUP_ID = os.environ.get("LOG_GROUP_ID")
+LOG_TOPIC_ID = os.environ.get("LOG_TOPIC_ID")
 
 # --- Menu Messages ---
 WELCOME_MESSAGE = """
@@ -128,14 +131,15 @@ By using this bot, you agree to:
 By continuing to use this bot, you accept these terms.
 """
 
-def load_databases():
-    """Load both main and series databases."""
+async def load_databases():
+    """Load both main and series databases asynchronously."""
     global db, series_db
 
     # Load main database
     try:
-        with open(DB_FILE, 'r', encoding='utf-8') as f:
-            db = json.load(f)
+        async with aiofiles.open(DB_FILE, 'r', encoding='utf-8') as f:
+            content = await f.read()
+            db = json.loads(content)
             logger.info(f"Loaded main database: {len(db)} entries from {DB_FILE}")
     except Exception as e:
         logger.error(f"Error loading main database from {DB_FILE}: {e}")
@@ -143,19 +147,21 @@ def load_databases():
 
     # Load series database
     try:
-        with open(SERIES_DB_FILE, 'r', encoding='utf-8') as f:
-            series_db = json.load(f)
+        async with aiofiles.open(SERIES_DB_FILE, 'r', encoding='utf-8') as f:
+            content = await f.read()
+            series_db = json.loads(content)
             logger.info(f"Loaded series database: {len(series_db)} series from {SERIES_DB_FILE}")
     except Exception as e:
         logger.warning(f"Series database not found at {SERIES_DB_FILE}: {e}")
         series_db = {}
 
-def load_tracked_users():
-    """Load tracked users from file."""
+async def load_tracked_users():
+    """Load tracked users from file asynchronously."""
     global tracked_users
     try:
-        with open(USERS_FILE, 'r', encoding='utf-8') as f:
-            content = f.read().strip()
+        async with aiofiles.open(USERS_FILE, 'r', encoding='utf-8') as f:
+            content = await f.read()
+            content = content.strip()
             if not content:
                 logger.info(f"Users file {USERS_FILE} is empty, starting with empty set")
                 tracked_users = set()
@@ -167,9 +173,8 @@ def load_tracked_users():
     except json.JSONDecodeError as e:
         logger.warning(f"Users file {USERS_FILE} contains invalid JSON: {e}. Starting with empty set.")
         tracked_users = set()
-        # Try to create a fresh users file
         try:
-            save_tracked_users()
+            await save_tracked_users()
         except Exception as save_error:
             logger.error(f"Could not create fresh users file: {save_error}")
     except FileNotFoundError:
@@ -179,12 +184,12 @@ def load_tracked_users():
         logger.warning(f"Error loading users file {USERS_FILE}: {e}. Starting with empty set.")
         tracked_users = set()
 
-def save_tracked_users():
-    """Save tracked users to file."""
+async def save_tracked_users():
+    """Save tracked users to file asynchronously."""
     try:
         users_data = {'users': list(tracked_users)}
-        with open(USERS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(users_data, f, indent=2)
+        async with aiofiles.open(USERS_FILE, 'w', encoding='utf-8') as f:
+            await f.write(json.dumps(users_data, indent=2))
         logger.info(f"Saved {len(tracked_users)} tracked users to {USERS_FILE}")
     except Exception as e:
         logger.error(f"Error saving tracked users to {USERS_FILE}: {e}")
@@ -198,12 +203,20 @@ def get_base_series_name(title: str) -> str:
     base_name = re.split(r'\s+Season\s+\d|\s+സീസൺ\s+\d', title, 1, re.IGNORECASE)[0]
     return base_name.strip()
 
-def add_user(user_id: int):
+async def add_user(user_id: int):
     """Add user to tracked users if not already present."""
     if user_id not in tracked_users:
         tracked_users.add(user_id)
-        save_tracked_users()
+        await save_tracked_users()
         logger.info(f"Added new user {user_id} to tracking")
+
+
+async def periodic_save_users():
+    """Periodically save the tracked users list."""
+    while True:
+        await asyncio.sleep(300)  # 5 minutes
+        logger.info("Performing periodic save of tracked users.")
+        await save_tracked_users()
 
 async def broadcast_message(message_data: dict, admin_chat_id: int) -> Dict:
     """Broadcast a message to all tracked users."""
@@ -312,6 +325,23 @@ async def broadcast_message(message_data: dict, admin_chat_id: int) -> Dict:
         'text': stats_text,
         'parse_mode': 'Markdown'
     }
+
+async def send_log(text: str):
+    """Sends a log message to the configured Telegram group and topic."""
+    if not LOG_GROUP_ID:
+        return
+
+    payload = {
+        'chat_id': LOG_GROUP_ID,
+        'text': text,
+        'parse_mode': 'Markdown'
+    }
+
+    if LOG_TOPIC_ID:
+        payload['message_thread_id'] = LOG_TOPIC_ID
+
+    # This will use the default 'sendMessage' method
+    await send_telegram_message(payload)
 
 def search_content(query: str) -> List[Dict]:
     """Enhanced search with series support and Unicode normalization."""
@@ -895,7 +925,7 @@ async def handle_telegram_message(message_data: dict) -> Dict:
             user_id = callback['from']['id']
             
             # Track user
-            add_user(user_id)
+            await add_user(user_id)
 
             response = await handle_callback_query(callback_data, callback['message'], str(chat_id))
             # The chat_id and message_id are now added in handle_callback_query
@@ -986,7 +1016,7 @@ async def handle_telegram_message(message_data: dict) -> Dict:
             return None
 
         # Track user
-        add_user(user_id)
+        await add_user(user_id)
 
         if not text:
             return None
@@ -1057,6 +1087,9 @@ All admin commands are restricted to bot owner only."""
 
         # Regular commands
         if text.startswith('/start'):
+            user_info = user.get('username', "unknown")
+            log_text = f"✅ User @{user_info} ({user_id}) started the bot."
+            await send_log(log_text)
             return {
                 'chat_id': chat_id,
                 'text': WELCOME_MESSAGE,
@@ -1097,6 +1130,9 @@ All admin commands are restricted to bot owner only."""
                     'text': "Movie name too long. Please use a shorter search term."
                 }
             else:
+                user_info = user.get('username', "unknown")
+                log_text = f"🔍 User @{user_info} ({user_id}) searched for: `{text}`"
+                await send_log(log_text)
                 # Perform search
                 results = search_content(text)
 
@@ -1232,8 +1268,9 @@ app = FastAPI(
 async def startup_event():
     """Initialize application on startup."""
     logger.info("Starting enhanced application...")
-    load_databases()
-    load_tracked_users()
+    await load_databases()
+    await load_tracked_users()
+    asyncio.create_task(periodic_save_users())
 
     # Set webhook if token is available
     # if TOKEN:

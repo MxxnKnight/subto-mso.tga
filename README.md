@@ -47,6 +47,18 @@ For the scraper to be able to save the updated database back to your repository,
 - **`TELEGRAM_BOT_TOKEN`**: Your bot token obtained from BotFather on Telegram.
 - **`OWNER_ID`**: (Optional) Your personal Telegram User ID.
 - **`WEBHOOK_SECRET`**: Render will create this for you automatically if you use the `render.yaml` file.
+- **`LOG_GROUP_ID`**: (Optional) The ID of a Telegram group where the bot will send logs of user actions (e.g., when a user starts the bot or makes a search).
+- **`LOG_TOPIC_ID`**: (Optional) If the `LOG_GROUP_ID` is a group with topics enabled, you can specify the ID of a topic to send the logs to.
+
+**How to get the `LOG_GROUP_ID` and `LOG_TOPIC_ID`:**
+
+1.  **Create a public or private group** for your logs.
+2.  **Add your bot to the group** as a member.
+3.  **Send a message** to the group (or the specific topic if you have them enabled).
+4.  **Forward that message** to a bot like `@userinfobot`.
+5.  The bot will reply with a JSON message.
+    *   The `chat.id` will be your `LOG_GROUP_ID`.
+    *   If you sent the message in a topic, there will be a `message_thread_id` field. This is your `LOG_TOPIC_ID`.
 
 That's it! The GitHub Action is already configured and will start running on its schedule.
 
