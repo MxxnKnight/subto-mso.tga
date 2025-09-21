@@ -20,7 +20,7 @@ RELEASES_URL = f"{BASE_URL}/releases/"
 MAX_PAGES = int(os.environ.get("SCRAPER_MAX_PAGES", "6"))
 HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
 
-# --- Helper Functions (Unchanged from original) ---
+# --- Helper Functions (Standalone) ---
 def get_soup(url):
     try:
         response = requests.get(url, headers=HEADERS, timeout=20)
@@ -111,13 +111,13 @@ def scrape_detail_page(url):
             return None
 
         field_mappings = [
-            ('director', ['director', 'സംവിധായകൻ', 'director(s)', 'directors', 'directed by', 'direction', 'സംവിധാനം']),
-            ('genre', ['genre', 'വിഭാഗം', 'genres', 'category', 'categories', 'ജോണർ', 'type']),
-            ('language', ['language', 'ഭാഷ', 'languages']),
-            ('translatedBy', ['translator', 'translators', 'പരിഭാഷകർ', 'പരിഭാഷകൻ', 'translation', 'പരിഭാഷ', 'translated by', 'subtitled by']),
-            ('imdb_rating', ['imdb rating', 'imdb', 'ഐ.എം.ഡി.ബി', 'rating', 'ratings', 'imdb score', 'score']),
-            ('msone_release', ['msone release', 'msone', 'റിലീസ് നം', 'release number', 'release no', 'release', 'ms one']),
-            ('certification', ['certification', 'സെർട്ടിഫിക്കേഷൻ', 'rated', 'rating', 'certificate', 'age rating'])
+            ('director', ['director', 'സംവിധായകൻ']),
+            ('genre', ['genre', 'വിഭാഗം']),
+            ('language', ['language', 'ഭാഷ']),
+            ('translatedBy', ['translator', 'പരിഭാഷകർ', 'പരിഭാഷകൻ']),
+            ('imdb_rating', ['imdb rating', 'imdb', 'ഐ.എം.ഡി.ബി']),
+            ('msone_release', ['msone release', 'msone', 'റിലീസ് നം']),
+            ('certification', ['certification', 'സെർട്ടിഫിക്കേഷൻ'])
         ]
 
         for field_name, labels in field_mappings:
@@ -142,8 +142,6 @@ async def upsert_subtitle(conn, post_details):
 
     unique_id = f"{imdb_id}-S{post_details['season_number']}" if post_details.get('is_series') else imdb_id
 
-    # This is the master mapping from scraped data to database columns
-    # It ensures all keys exist and are properly named
     db_record = {
         'unique_id': unique_id,
         'imdb_id': imdb_id,
@@ -154,7 +152,7 @@ async def upsert_subtitle(conn, post_details):
         'is_series': post_details.get('is_series'),
         'season_number': post_details.get('season_number'),
         'series_name': post_details.get('series_name'),
-        'total_seasons': None, # This will be updated later
+        'total_seasons': None,
         'srt_url': post_details.get('srtURL'),
         'poster_url': post_details.get('posterMalayalam'),
         'imdb_url': post_details.get('imdbURL'),
@@ -169,60 +167,36 @@ async def upsert_subtitle(conn, post_details):
         'poster_maker': json.dumps(post_details.get('poster_maker')) if post_details.get('poster_maker') else None,
     }
 
-    # The UPSERT query
-    # If a subtitle with the same unique_id exists, it updates the record.
-    # Otherwise, it inserts a new one.
     query = """
         INSERT INTO subtitles (
             unique_id, imdb_id, source_url, scraped_at, title, year, is_series,
             season_number, series_name, total_seasons, srt_url, poster_url, imdb_url,
             description, director, genre, language, translator, imdb_rating,
             msone_release, certification, poster_maker
-        ) VALUES (
-            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-            $15, $16, $17, $18, $19, $20, $21, $22
-        )
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
         ON CONFLICT (unique_id) DO UPDATE SET
-            source_url = EXCLUDED.source_url,
-            scraped_at = EXCLUDED.scraped_at,
-            title = EXCLUDED.title,
-            year = EXCLUDED.year,
-            is_series = EXCLUDED.is_series,
-            season_number = EXCLUDED.season_number,
-            series_name = EXCLUDED.series_name,
-            srt_url = EXCLUDED.srt_url,
-            poster_url = EXCLUDED.poster_url,
-            imdb_url = EXCLUDED.imdb_url,
-            description = EXCLUDED.description,
-            director = EXCLUDED.director,
-            genre = EXCLUDED.genre,
-            language = EXCLUDED.language,
-            translator = EXCLUDED.translator,
-            imdb_rating = EXCLUDED.imdb_rating,
-            msone_release = EXCLUDED.msone_release,
-            certification = EXCLUDED.certification,
-            poster_maker = EXCLUDED.poster_maker
-        RETURNING unique_id;
+            source_url = EXCLUDED.source_url, scraped_at = EXCLUDED.scraped_at, title = EXCLUDED.title,
+            year = EXCLUDED.year, is_series = EXCLUDED.is_series, season_number = EXCLUDED.season_number,
+            series_name = EXCLUDED.series_name, srt_url = EXCLUDED.srt_url, poster_url = EXCLUDED.poster_url,
+            imdb_url = EXCLUDED.imdb_url, description = EXCLUDED.description, director = EXCLUDED.director,
+            genre = EXCLUDED.genre, language = EXCLUDED.language, translator = EXCLUDED.translator,
+            imdb_rating = EXCLUDED.imdb_rating, msone_release = EXCLUDED.msone_release,
+            certification = EXCLUDED.certification, poster_maker = EXCLUDED.poster_maker;
     """
     try:
-        result = await conn.fetchval(query, *db_record.values())
-        if result:
-            logger.info(f"UPSERTED: {db_record['title']} ({db_record['unique_id']})")
-            return 1
+        await conn.execute(query, *db_record.values())
+        logger.info(f"UPSERTED: {db_record['title']} ({db_record['unique_id']})")
+        return 1
     except Exception as e:
         logger.error(f"Error upserting {db_record['unique_id']}: {e}")
     return 0
 
-
 async def update_total_seasons(conn):
     """Queries the database to calculate and update the total_seasons for all series."""
     logger.info("Post-processing: Updating total seasons count for all series...")
-
-    # 1. Get all distinct series names and their season counts
     query = """
         SELECT series_name, COUNT(DISTINCT season_number) as season_count
-        FROM subtitles
-        WHERE is_series = TRUE AND series_name IS NOT NULL
+        FROM subtitles WHERE is_series = TRUE AND series_name IS NOT NULL
         GROUP BY series_name;
     """
     series_counts = await conn.fetch(query)
@@ -231,22 +205,14 @@ async def update_total_seasons(conn):
         logger.info("No series found to update.")
         return
 
-    # 2. Prepare and execute the update statements
-    update_query = """
-        UPDATE subtitles
-        SET total_seasons = $1
-        WHERE is_series = TRUE AND series_name = $2;
-    """
-    updates = []
-    for record in series_counts:
-        updates.append((record['season_count'], record['series_name']))
+    update_query = "UPDATE subtitles SET total_seasons = $1 WHERE is_series = TRUE AND series_name = $2;"
+    updates = [(record['season_count'], record['series_name']) for record in series_counts]
 
     try:
         await conn.executemany(update_query, updates)
         logger.info(f"Successfully updated total_seasons for {len(updates)} unique series.")
     except Exception as e:
         logger.error(f"Failed to update total_seasons: {e}")
-
 
 async def main():
     """Main async scraper function."""
@@ -261,30 +227,22 @@ async def main():
         logger.info("Successfully connected to the database.")
 
         # --- Update old series entries ---
-        logger.info("Checking for and updating old series entries...")
         seven_days_ago = datetime.now() - timedelta(days=7)
-        old_series_to_update = await conn.fetch(
-            "SELECT unique_id, source_url, title FROM subtitles WHERE is_series = TRUE AND scraped_at < $1",
-            seven_days_ago
-        )
+        old_series_to_update = await conn.fetch("SELECT unique_id, source_url, title FROM subtitles WHERE is_series = TRUE AND scraped_at < $1", seven_days_ago)
 
-        update_count = 0
         logger.info(f"Found {len(old_series_to_update)} series entries older than 7 days to check for updates.")
         for record in old_series_to_update:
-            logger.info(f"Rescraping '{record['title']}'...")
             post_details = scrape_detail_page(record['source_url'])
             if post_details:
-                update_count += await upsert_subtitle(conn, post_details)
-                await asyncio.sleep(0.2) # Be nice to the server
-        logger.info(f"Finished updating old entries. Updated {update_count} entries.")
+                await upsert_subtitle(conn, post_details)
+                await asyncio.sleep(0.2)
 
         # --- Scrape for new entries ---
         logger.info("Scraping for new entries...")
         current_page_url = RELEASES_URL
         page_num = 1
 
-        existing_ids = await conn.fetch("SELECT unique_id FROM subtitles")
-        existing_ids_set = {record['unique_id'] for record in existing_ids}
+        existing_ids_set = {r['unique_id'] for r in await conn.fetch("SELECT unique_id FROM subtitles")}
         logger.info(f"Loaded {len(existing_ids_set)} existing IDs from database.")
 
         while page_num <= MAX_PAGES:
@@ -301,19 +259,17 @@ async def main():
                 if not (link_tag and link_tag.get('href')): continue
 
                 detail_url = urljoin(BASE_URL, link_tag['href'])
-                imdb_id_from_url = extract_imdb_id(detail_url) # Quick check
-
-                # Simple optimization: if a movie ID is already in the DB, skip detailed scraping
+                imdb_id_from_url = extract_imdb_id(detail_url)
                 if imdb_id_from_url and imdb_id_from_url in existing_ids_set:
-                    # This could miss series updates, but we handle that in the "update old series" step
                     continue
 
                 post_details = scrape_detail_page(detail_url)
                 if not post_details: continue
 
                 added = await upsert_subtitle(conn, post_details)
-                newly_added_count += added
-                new_on_this_page += added
+                if added:
+                    newly_added_count += 1
+                    new_on_this_page += 1
                 await asyncio.sleep(0.1)
 
             if new_on_this_page == 0 and page_num > 5:
@@ -331,7 +287,6 @@ async def main():
 
         logger.info(f"Scraping finished. Added/updated {newly_added_count} new entries.")
         
-        # --- Post-processing ---
         await update_total_seasons(conn)
 
     except Exception as e:
@@ -340,7 +295,6 @@ async def main():
         if conn:
             await conn.close()
             logger.info("Database connection closed.")
-
 
 if __name__ == "__main__":
     asyncio.run(main())
