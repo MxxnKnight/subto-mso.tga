@@ -616,7 +616,7 @@ def create_series_seasons_keyboard(seasons: Dict[int, str]) -> Dict:
     keyboard.append([{'text': ' Close', 'callback_data': 'menu_close'}])
     return {'inline_keyboard': keyboard}
 
-def format_movie_details(entry: asyncpg.Record) -> (str, str):
+def format_movie_details(entry: asyncpg.Record, user_id: int) -> (str, str):
     """Formats movie/series details from a database record."""
 
     def get_display_value(value):
@@ -680,6 +680,15 @@ def format_movie_details(entry: asyncpg.Record) -> (str, str):
     if entry.get('description') and entry['description'] != 'No description available':
         synopsis_text = f"📖 **Synopsis:**\n{entry['description']}"
 
+    # Add Admin ID if the user is the owner
+    if str(user_id) == OWNER_ID:
+        admin_info = f"\n\n🔧 **Admin ID:** `{entry['unique_id']}`"
+        # Append to synopsis if it exists, otherwise append to core details
+        if synopsis_text:
+            synopsis_text += admin_info
+        else:
+            core_details_message += admin_info
+
     return core_details_message, synopsis_text
 
 def create_detail_keyboard(entry: asyncpg.Record) -> Dict:
@@ -704,7 +713,7 @@ def create_detail_keyboard(entry: asyncpg.Record) -> Dict:
 
     return {'inline_keyboard': keyboard}
 
-async def handle_callback_query(callback_data: str, message_data: dict, chat_id: str) -> Optional[Dict]:
+async def handle_callback_query(callback_data: str, message_data: dict, chat_id: str, user_id: int) -> Optional[Dict]:
     """Handle callback query from inline keyboards by querying the database."""
     if not db_pool: return None
     try:
@@ -741,7 +750,7 @@ async def handle_callback_query(callback_data: str, message_data: dict, chat_id:
                 if poster_url and poster_url.startswith('https'):
                     return {'method': 'delete_and_resend', 'chat_id': chat_id, 'message_id': message_data.get('message_id'), 'entry': entry}
                 else:
-                    core_details, synopsis = format_movie_details(entry)
+                    core_details, synopsis = format_movie_details(entry, user_id)
                     full_text = f"{core_details}\n{synopsis}" if synopsis else core_details
                     return {
                         'method': 'editMessageText',
@@ -782,14 +791,15 @@ async def handle_telegram_message(message_data: dict) -> Optional[Dict]:
     # Callback Query Handling
     if 'callback_query' in message_data:
         callback = message_data['callback_query']
-        await add_user(callback['from']['id'])
-        response = await handle_callback_query(callback['data'], callback['message'], str(callback['message']['chat']['id']))
+        user_id = callback['from']['id']
+        await add_user(user_id)
+        response = await handle_callback_query(callback['data'], callback['message'], str(callback['message']['chat']['id']), user_id)
 
         if response:
             if response.get('method') == 'delete_and_resend':
                 await send_telegram_message({'method': 'deleteMessage', 'chat_id': response['chat_id'], 'message_id': response['message_id']})
                 entry = response['entry']
-                core_details, synopsis = format_movie_details(entry)
+                core_details, synopsis = format_movie_details(entry, user_id)
                 photo_message = await send_telegram_message({'method': 'sendPhoto', 'chat_id': response['chat_id'], 'photo': entry['poster_url'], 'caption': core_details, 'parse_mode': 'Markdown'})
                 synopsis_message = await send_telegram_message({'method': 'sendMessage', 'chat_id': response['chat_id'], 'text': synopsis or "No synopsis."})
 
