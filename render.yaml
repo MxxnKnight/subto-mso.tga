@@ -2,11 +2,7 @@ services:
   - type: web
     name: subtitle-bot
     env: python
-    buildPacks:
-      - name: apt
-        packages:
-          - libpq-dev
-          - build-essential
+    prebuildCommand: "apt-get update && apt-get install -y libpq-dev build-essential"
     buildCommand: "pip install -r requirements.txt"
     startCommand: "uvicorn app:app --host 0.0.0.0 --port $PORT"
     healthCheckPath: /healthz
