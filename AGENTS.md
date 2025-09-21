@@ -4,70 +4,56 @@
 
 ## 1. Project Overview
 
-This is a Telegram bot that scrapes movie and series subtitle information from `malayalamsubtitles.org`, stores it in a JSON database, and allows users to search for and download subtitle files. The project has undergone significant refactoring to arrive at its current stable architecture.
+This is a Telegram bot that scrapes movie and series subtitle information from `malayalamsubtitles.org`, stores it in a **PostgreSQL database**, and allows users to search for and download subtitle files. The project has been refactored to use a persistent database instead of JSON files to prevent data loss and service restarts.
 
 ### Core Dependencies
 - `fastapi` & `uvicorn`: For the web server.
-- `aiohttp` & `aiofiles`: For asynchronous HTTP requests and file operations, primarily used for downloading subtitles and communicating with the Telegram API.
+- `aiohttp`: For asynchronous HTTP requests.
+- `asyncpg` & `psycopg2-binary`: For connecting to the PostgreSQL database.
 - `requests` & `beautifulsoup4`: For web scraping.
 
 ## 2. Core Architecture
 
-The project uses a decoupled architecture to ensure stability and cost-effectiveness.
+The project uses a decoupled architecture for stability and scalability.
 
--   **Web Service (Render):** The live Telegram bot is a FastAPI application defined in `app.py`. It is hosted on Render's free web service tier. Its primary role is to respond to user interactions and serve data from the `db.json` file that is included in the repository. The build command for this service is simple: `pip install -r requirements.txt`.
+-   **Web Service (Render):** The live Telegram bot is a FastAPI application defined in `app.py`. It is hosted on Render's free web service tier. Its primary role is to respond to user interactions by querying the central PostgreSQL database.
 
--   **Scraper (GitHub Actions):** Data collection is handled by `scraper.py`. This script is executed automatically once a day by a GitHub Actions workflow in `.github/workflows/scraper.yml`. The workflow checks out the `jules-bot-fix` branch, runs the scraper, and commits the updated `db.json` and `series_db.json` files back to the repository. This commit automatically triggers a new deployment of the web service on Render.
+-   **Scraper (GitHub Actions):** Data collection is handled by `scraper.py`. This script is executed automatically once a day by a GitHub Actions workflow in `.github/workflows/scraper.yml`. The workflow connects to the PostgreSQL database, scrapes the latest subtitles, and directly inserts or updates records in the database. **It no longer commits any files to the repository.** This architecture prevents the bot from restarting every time the data is updated.
 
 ## 3. Key File Details & Logic
 
 -   **`app.py`:** The main FastAPI application.
-    -   **Webhook Handler (`telegram_webhook`):** The entry point for all Telegram updates. It correctly calls `send_telegram_message` to execute actions.
-    -   **Bot API Calls (`send_telegram_message`):** This is a critical helper function. It takes a payload dictionary, **pops** the `method` key to use in the URL, and sends the rest of the payload as JSON. This was a major bug that was fixed to make UI buttons work.
-    -   **Bot Interaction Flow:**
-        1. A user sends a text message (e.g., `/start` or a search query).
-        2. `handle_message_text` processes it and returns a payload to send a *new message* (e.g., the welcome menu or a list of search results).
-        3. The user clicks an inline button (e.g., `❌ Close` or a search result).
-        4. This sends a `callback_query` to the webhook.
-        5. `handle_callback_query` processes it and returns a payload to *edit the existing message* (e.g., show movie details) or *delete it*.
-    -   **File Downloads (`download_and_upload_subtitle`):** This function uses a "send -> edit -> delete" flow for status messages to provide a clean UI.
+    -   **Database Connection:** On startup, `init_db` connects to the PostgreSQL database using `asyncpg` and creates the `users` and `subtitles` tables if they don't exist.
+    -   **Data Handling:** All functions that previously accessed in-memory JSON files (e.g., `search_content`, `handle_callback_query`) have been rewritten to be `async` and perform direct SQL queries against the database.
+    -   **Admin Commands:** Commands like `/stats` and `/delete` now operate directly on the database.
 
 -   **`scraper.py`:** The data scraper.
-    -   **Incremental Logic:** The `main` function is incremental. It loads the existing `db.json` and only adds new entries.
-    -   **Unique ID for Series:** To handle multiple seasons of a single TV series, the scraper creates a composite unique ID: `tt1234567-S2` for Season 2.
-    -   **Parsing Logic (`scrape_detail_page`):** The scraper uses a robust two-pass system. It first scrapes all table rows into a dictionary, then iterates through a mapping of desired fields to find and assign the data.
+    -   **Database Logic:** The `main` function is `async` and connects to the PostgreSQL database. It uses an "UPSERT" (`INSERT ... ON CONFLICT DO UPDATE`) command to add new entries and update existing ones.
+    -   **No File I/O:** The script no longer reads from or writes to any JSON files.
 
--   `.github/workflows/scraper.yml`: The GitHub Actions configuration. **It is configured to check out and commit to the `jules-bot-fix` branch.**
+-   `.github/workflows/scraper.yml`: The GitHub Actions configuration.
+    -   It is now configured to simply run the `scraper.py` script.
+    -   The `DATABASE_URL` is passed as a secret environment variable.
+    -   **The `git-auto-commit-action` has been removed.**
 
 ## 4. Development & Testing
 
 -   **Testing the Scraper:** The scraper is the most complex part. Test locally before committing changes.
     -   `pip install -r requirements.txt`
+    -   You must have a local PostgreSQL instance or a cloud-hosted one.
+    -   Set the `DATABASE_URL` environment variable.
     -   `SCRAPER_MAX_PAGES=1 python scraper.py`
 -   **Key Challenge - Scraper Fragility:** The scraper's logic is tightly coupled to the HTML structure of `malayalamsubtitles.org`. **If the website's HTML, class names, or IDs change, the scraper will break.**
 
 ## 5. Configuration
 
--   **GitHub Repo Settings:** For the GitHub Action to work, the repository's settings must be configured correctly: **Settings > Actions > General > Workflow permissions > "Read and write permissions"**.
 -   **Environment Variables:**
+    -   `DATABASE_URL`: **This is now the most critical variable.** It must be the connection string for your PostgreSQL database and must be set as a secret in both Render and the GitHub repository settings for the Action to work.
     -   `TELEGRAM_BOT_TOKEN`: The secret token for your bot.
     -   `OWNER_ID`: Your personal Telegram User ID for admin commands.
     -   `WEBHOOK_SECRET`: **Auto-generated by Render.** You do not need to set this.
-    -   `SCRAPER_MAX_PAGES`: (For GitHub Action) Controls the maximum number of pages the scraper will process. Default is `300`.
+    -   `SCRAPER_MAX_PAGES`: (For GitHub Action) Controls the maximum number of pages the scraper will process. Default is `6`.
 
-## 6.Bot Functioning
+## 6. Bot Functioning
 
--  **Home menu**
-    -  `/start` : command to start the bot and start(home) menu. Home menu has 5 inline buttons.
-    -  `home page` : It is the /start welcome page,it has welcome message with other inline buttons exept home
-    -  `about page` : it is the page for credits.its has other inline buttons exept about.
-    -   `help page` : for help,notes about commands, tips & tricks. it has all other buttons exept help
-    -    `Tos` : This page for explaining Terms and conditions.it has all other buttons expect Tos.
-    -   All these pages and inter connected and use buttons to open each pages with `editmessage` option.
-
--  **Searching Movies/Series**
-    - if user search a movie query `eg: Dune` by sending message to bot,bot reply with the searched query message and its inline buttons that contains its callback for open `detailed message`. This bot reply known as search results
-    - `Search results` message has the text to user query and list of finded entries in(from db.json) inline buttons.Its showed on the query words matching results.
-    - when user click a button for a entry ,the search results message get deleted and bot send the selected query entry's detailed message.It contains poster image,title, release number,year, director, language, translator, genres, rating, certification, synopsis etc. the detailed message also include download button for download the subtitle
-    - Download button: when user clicks download button,bot download the subtitle from the link in db.json .since movie has one srt file bot upload it and use filename as caption, since series has multiple subtitle(season full subtitles in zip) 
-bot download it and unzip before uploading to user,then send it to user,it also use filename as each file caption.
+The user-facing functionality of the bot remains the same. It still provides menus for navigation and allows users to search for, view details of, and download subtitles for movies and series. The backend change to a persistent database makes the service more reliable.

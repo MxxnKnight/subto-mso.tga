@@ -12,8 +12,6 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v3
-        with:
-          ref: 'jules-bot-fix'
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -26,11 +24,6 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run scraper
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python scraper.py
-
-      - name: Commit and push if database changed
-        uses: stefanzweifel/git-auto-commit-action@v4
-        with:
-          commit_message: "chore: Update subtitle database"
-          file_pattern: "db.json series_db.json"
-          commit_author: GitHub Actions <actions@github.com>
