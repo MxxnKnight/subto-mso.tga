@@ -1124,6 +1124,10 @@ async def handle_telegram_message(message_data: dict) -> Dict:
 **📊 Statistics:**
 • `/stats` - Show comprehensive bot statistics
 
+**⚙️ Database Management:**
+• `/delete <imdb_id>` - Delete an entry from the database
+• `/rescrape <imdb_id>` - Re-scrape a specific entry
+
 **ℹ️ Regular Commands:**
 • `/start` - Start the bot
 • `/help` - Show help information
