@@ -11,6 +11,7 @@ from typing import Dict, Any, List, Optional
 from urllib.parse import urlparse
 import re
 import aiofiles
+import asyncpg
 from scraper import scrape_detail_page
 
 from fastapi import FastAPI, Request, Response, HTTPException, Query
@@ -28,12 +29,12 @@ WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "a-random-string")
 OWNER_ID = os.environ.get("OWNER_ID")
 DB_FILE = os.environ.get("DB_FILE", "db.json")
 SERIES_DB_FILE = os.environ.get("SERIES_DB_FILE", "series_db.json")
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
 # --- Global Variables ---
 db: Dict[str, Any] = {}
 series_db: Dict[str, Dict[int, str]] = {}
-tracked_users: set = set()
-USERS_FILE = os.environ.get("USERS_FILE", "users.json")
+db_pool: Optional[asyncpg.Pool] = None
 LOG_GROUP_ID = os.environ.get("LOG_GROUP_ID")
 LOG_TOPIC_ID = os.environ.get("LOG_TOPIC_ID")
 
@@ -156,44 +157,29 @@ async def load_databases():
         logger.warning(f"Series database not found at {SERIES_DB_FILE}: {e}")
         series_db = {}
 
-async def load_tracked_users():
-    """Load tracked users from file asynchronously."""
-    global tracked_users
-    try:
-        async with aiofiles.open(USERS_FILE, 'r', encoding='utf-8') as f:
-            content = await f.read()
-            content = content.strip()
-            if not content:
-                logger.info(f"Users file {USERS_FILE} is empty, starting with empty set")
-                tracked_users = set()
-                return
+async def init_db():
+    """Initialize the database and create tables if they don't exist."""
+    if not DATABASE_URL:
+        logger.warning("DATABASE_URL not set. Skipping database initialization.")
+        return
 
-            users_data = json.loads(content)
-            tracked_users = set(users_data.get('users', []))
-            logger.info(f"Loaded {len(tracked_users)} tracked users from {USERS_FILE}")
-    except json.JSONDecodeError as e:
-        logger.warning(f"Users file {USERS_FILE} contains invalid JSON: {e}. Starting with empty set.")
-        tracked_users = set()
-        try:
-            await save_tracked_users()
-        except Exception as save_error:
-            logger.error(f"Could not create fresh users file: {save_error}")
-    except FileNotFoundError:
-        logger.info(f"Users file {USERS_FILE} not found, starting with empty set")
-        tracked_users = set()
-    except Exception as e:
-        logger.warning(f"Error loading users file {USERS_FILE}: {e}. Starting with empty set.")
-        tracked_users = set()
-
-async def save_tracked_users():
-    """Save tracked users to file asynchronously."""
+    global db_pool
     try:
-        users_data = {'users': list(tracked_users)}
-        async with aiofiles.open(USERS_FILE, 'w', encoding='utf-8') as f:
-            await f.write(json.dumps(users_data, indent=2))
-        logger.info(f"Saved {len(tracked_users)} tracked users to {USERS_FILE}")
+        db_pool = await asyncpg.create_pool(DATABASE_URL)
+        if db_pool is None:
+             raise Exception("Database pool was not created.")
+
+        async with db_pool.acquire() as connection:
+            await connection.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id BIGINT PRIMARY KEY,
+                    added_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+        logger.info("Database connection pool created and table 'users' initialized.")
     except Exception as e:
-        logger.error(f"Error saving tracked users to {USERS_FILE}: {e}")
+        logger.error(f"Could not connect to database or initialize tables: {e}")
+        db_pool = None # Ensure pool is None if setup fails
 
 def rebuild_series_db():
     """Rebuild the series_db from the main db."""
@@ -243,26 +229,55 @@ def get_base_series_name(title: str) -> str:
     return base_name.strip()
 
 async def add_user(user_id: int):
-    """Add user to tracked users if not already present."""
-    if user_id not in tracked_users:
-        tracked_users.add(user_id)
-        await save_tracked_users()
-        logger.info(f"Added new user {user_id} to tracking")
+    """Add a user to the database if they don't already exist."""
+    if not db_pool:
+        return
 
+    try:
+        # Using ON CONFLICT is efficient and safe for concurrent requests
+        await db_pool.execute(
+            "INSERT INTO users (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING",
+            user_id
+        )
+    except Exception as e:
+        logger.error(f"Error adding user {user_id} to database: {e}")
 
-async def periodic_save_users():
-    """Periodically save the tracked users list."""
-    while True:
-        await asyncio.sleep(300)  # 5 minutes
-        logger.info("Performing periodic save of tracked users.")
-        await save_tracked_users()
+async def get_total_users_count() -> int:
+    """Get the total number of users from the database."""
+    if not db_pool:
+        return 0
+
+    try:
+        count = await db_pool.fetchval("SELECT COUNT(*) FROM users")
+        return count if count is not None else 0
+    except Exception as e:
+        logger.error(f"Error getting user count from database: {e}")
+        return 0
 
 async def broadcast_message(message_data: dict, admin_chat_id: int) -> Dict:
-    """Broadcast a message to all tracked users."""
-    if not tracked_users:
+    """Broadcast a message to all tracked users from the database."""
+    if not db_pool:
         return {
             'chat_id': admin_chat_id,
-            'text': "❌ No users to broadcast to. Users will be added when they interact with the bot.",
+            'text': "❌ Database not connected. Cannot broadcast.",
+            'parse_mode': 'Markdown'
+        }
+
+    try:
+        user_records = await db_pool.fetch("SELECT user_id FROM users")
+        all_user_ids = [record['user_id'] for record in user_records]
+    except Exception as e:
+        logger.error(f"Could not fetch users for broadcast: {e}")
+        return {
+            'chat_id': admin_chat_id,
+            'text': f"❌ An error occurred while fetching users from the database: {e}",
+            'parse_mode': 'Markdown'
+        }
+
+    if not all_user_ids:
+        return {
+            'chat_id': admin_chat_id,
+            'text': "❌ No users to broadcast to.",
             'parse_mode': 'Markdown'
         }
     
@@ -317,7 +332,7 @@ async def broadcast_message(message_data: dict, admin_chat_id: int) -> Dict:
     successful_sends = 0
     failed_sends = 0
     
-    for user_id in tracked_users:
+    for user_id in all_user_ids:
         try:
             user_payload = broadcast_payload.copy()
             user_payload['chat_id'] = user_id
@@ -355,7 +370,7 @@ async def broadcast_message(message_data: dict, admin_chat_id: int) -> Dict:
 
 ✅ **Successfully sent to:** {successful_sends} users
 ❌ **Failed to send to:** {failed_sends} users
-📊 **Total users:** {len(tracked_users)} users
+📊 **Total users:** {len(all_user_ids)} users
 
 **Message type:** {broadcast_payload['method'].replace('send', '').title()}"""
     
@@ -1069,9 +1084,10 @@ async def handle_telegram_message(message_data: dict) -> Dict:
                 return await broadcast_message(message, chat_id)
             elif text == '/broadcaststats':
                 # Show broadcast statistics
+                total_users = await get_total_users_count()
                 return {
                     'chat_id': chat_id,
-                    'text': f"📊 **Broadcast Statistics**\n\n👥 **Total tracked users:** {len(tracked_users)}\n📈 **Users ready for broadcast:** {len(tracked_users)}",
+                    'text': f"📊 **Broadcast Statistics**\n\n👥 **Total tracked users:** {total_users}\n📈 **Users ready for broadcast:** {total_users}",
                     'parse_mode': 'Markdown'
                 }
             elif text == '/stats':
@@ -1079,6 +1095,7 @@ async def handle_telegram_message(message_data: dict) -> Dict:
                 total_movies = sum(1 for entry in db.values() if not entry.get('is_series'))
                 total_series = len(series_db)
                 total_episodes = sum(1 for entry in db.values() if entry.get('is_series'))
+                total_users = await get_total_users_count()
 
                 stats_text = f"""📊 **Bot Statistics**
 
@@ -1086,8 +1103,8 @@ async def handle_telegram_message(message_data: dict) -> Dict:
 📺 **Series:** {total_series:,}
 📚 **Total Database:** {len(db):,} entries
 
-👥 **Users:** {len(tracked_users):,} tracked
-📈 **Broadcast Ready:** {len(tracked_users):,} users
+👥 **Users:** {total_users:,} tracked
+📈 **Broadcast Ready:** {total_users:,} users
 
 🤖 **Bot Status:** Online
 💾 **Last Updated:** {db.get('last_updated', 'Unknown') if db else 'No data'}"""
@@ -1407,40 +1424,47 @@ async def startup_event():
     """Initialize application on startup."""
     logger.info("Starting enhanced application...")
     await load_databases()
-    await load_tracked_users()
-    asyncio.create_task(periodic_save_users())
+    await init_db()
 
     # Set webhook if token is available
     # if TOKEN:
     #     import aiohttp
-
+    #
     #     try:
     #         base_url = os.environ.get("RENDER_EXTERNAL_URL", "https://subto-mso-tga.onrender.com")
     #         webhook_url = f"{base_url}/telegram"
-
+    #
     #         url = f"https://api.telegram.org/bot{TOKEN}/setWebhook"
     #         data = {
     #             "url": webhook_url,
     #             "secret_token": WEBHOOK_SECRET,
     #             "drop_pending_updates": True
     #         }
-
+    #
     #         async with aiohttp.ClientSession() as session:
     #             async with session.post(url, json=data) as resp:
     #                 if resp.status == 200:
     #                     logger.info(f"Webhook set to {webhook_url}")
-
+    #
     #                     # Notify owner
     #                     if OWNER_ID:
     #                         await send_telegram_message({
     #                             'chat_id': OWNER_ID,
-    #                             'text': '🟢 **Enhanced Bot v2.0 is Online!**\n\n✅ Database loaded successfully\n✅ All features activated\n✅ Ready to serve users',
+    #                             'text': '🟢 **Bot Online & DB Connected!**\n\n✅ Subtitle DB loaded\n✅ User DB connected\n✅ Ready to serve',
     #                             'parse_mode': 'Markdown'
     #                         })
     #                 else:
     #                     logger.error(f"Failed to set webhook: {resp.status}")
     #     except Exception as e:
     #         logger.error(f"Error setting webhook: {e}")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Clean up application on shutdown."""
+    logger.info("Shutting down application...")
+    if db_pool:
+        await db_pool.close()
+        logger.info("Database connection pool closed.")
 
 # --- API Endpoints ---
 @app.get("/")
