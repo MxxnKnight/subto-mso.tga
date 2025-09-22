@@ -199,43 +199,61 @@ async def run_broadcast(message: dict):
     })
 
 async def process_download(unique_id: str, chat_id: str):
-    if not db_pool: return
+    logger.info(f"Starting download process for unique_id: {unique_id}")
+    if not db_pool:
+        logger.error("Download process failed: Database pool not available.")
+        return
+
     entry = await db_pool.fetchrow("SELECT title, srt_url FROM subtitles WHERE unique_id = $1", unique_id)
     if not entry or not entry['srt_url']:
+        logger.error(f"Download failed for {unique_id}: No entry or srt_url found in DB.")
         await send_telegram_message({'chat_id': chat_id, 'text': "Sorry, the download link is missing."})
         return
 
+    logger.info(f"Found srt_url: {entry['srt_url']}")
+
     try:
+        logger.info(f"Attempting to download file from {entry['srt_url']}")
         async with aiohttp.ClientSession() as session:
             async with session.get(entry['srt_url']) as resp:
+                logger.info(f"Download response status: {resp.status}")
                 if resp.status != 200:
                     await send_telegram_message({'chat_id': chat_id, 'text': "Sorry, I couldn't download the file."})
                     return
                 file_content = await resp.read()
+        logger.info(f"Successfully downloaded {len(file_content)} bytes.")
 
         if entry['srt_url'].endswith('.zip'):
+            logger.info("Detected .zip file. Starting extraction.")
             with io.BytesIO(file_content) as zip_buffer:
                 with zipfile.ZipFile(zip_buffer) as zip_file:
-                    for filename in zip_file.namelist():
-                        if filename.lower().endswith('.srt'):
-                            sub_content = zip_file.read(filename)
-                            # Sending document requires a multipart/form-data POST, which is complex with json.
-                            # Instead, we'll use aiohttp to send it directly.
-                            form = aiohttp.FormData()
-                            form.add_field('chat_id', chat_id)
-                            form.add_field('document', sub_content, filename=filename, content_type='text/plain')
-                            form.add_field('caption', filename)
-                            await send_telegram_message(form)
-                            await asyncio.sleep(0.5) # Rate limit
+                    srt_files = [f for f in zip_file.namelist() if f.lower().endswith('.srt')]
+                    logger.info(f"Found {len(srt_files)} .srt files in zip: {srt_files}")
+                    if not srt_files:
+                        await send_telegram_message({'chat_id': chat_id, 'text': "Sorry, I couldn't find any subtitle files in that ZIP archive."})
+                        return
+
+                    for filename in srt_files:
+                        sub_content = zip_file.read(filename)
+                        logger.info(f"Uploading {filename} ({len(sub_content)} bytes)")
+                        form = aiohttp.FormData()
+                        form.add_field('chat_id', chat_id)
+                        form.add_field('document', sub_content, filename=filename, content_type='text/plain')
+                        form.add_field('caption', filename)
+                        upload_response = await send_telegram_message(form)
+                        logger.info(f"Upload response for {filename}: {upload_response}")
+                        await asyncio.sleep(0.5)
         else:
+            logger.info("Detected single file. Preparing for upload.")
             filename = f"{entry['title']}.srt"
             form = aiohttp.FormData()
             form.add_field('chat_id', chat_id)
             form.add_field('document', file_content, filename=filename, content_type='text/plain')
-            await send_telegram_message(form)
+            upload_response = await send_telegram_message(form)
+            logger.info(f"Upload response for single file: {upload_response}")
 
     except Exception as e:
-        logger.error(f"Download processing failed for {unique_id}: {e}")
+        logger.exception(f"Download processing failed for {unique_id}: {e}")
         await send_telegram_message({'chat_id': chat_id, 'text': "An error occurred while processing the file."})
 
 
