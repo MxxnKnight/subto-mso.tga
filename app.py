@@ -34,7 +34,7 @@ db_pool: Optional[asyncpg.Pool] = None
 
 # --- Menu Messages ---
 WELCOME_MESSAGE = "**🎬 Welcome to Malayalam Subtitle Search Bot!**\n\nYour one-stop destination for high-quality Malayalam subtitles for movies and TV shows."
-ABOUT_MESSAGE = "**ℹ️ About This Bot**\n\n**🌐 Technical Details:**\n- **Hosted on:** Render.com\n- **Framework:** FastAPI\n- **Database:** PostgreSQL\n- **Developer:** [@Mxxn_Knight](tg://resolve?domain=Mxxn_Knight)\n- **Version:** 3.2"
+ABOUT_MESSAGE = "**ℹ️ About This Bot**\n\n**🌐 Technical Details:**\n- **Hosted on:** Render.com\n- **Framework:** FastAPI\n- **Database:** PostgreSQL\n- **Developer:** [@Mxxn_Knight](tg://resolve?domain=Mxxn_Knight)\n- **Version:** 3.3"
 HELP_MESSAGE = "**❓ How to Use This Bot**\n\n**🔍 Searching:**\n• Type any movie/series name\n• Use English names for better results\n• Add year for specific versions (e.g., \"Dune 2021\")"
 
 # --- Self-Contained Scraper Logic ---
@@ -50,6 +50,14 @@ def _get_soup(url: str) -> Optional[BeautifulSoup]:
 
 def _clean_text(text: str) -> str: return re.sub(r'\s+', ' ', text.strip()) if text else ""
 def _extract_imdb_id(url: str) -> Optional[str]: return match.group(0) if (match := re.search(r'tt\d+', url or "")) else None
+def _extract_season_info(title: str) -> Dict[str, Any]:
+    patterns = [r'Season\s*(\d+)', r'സീസൺ\s*(\d+)', r'S0?(\d+)', r'സീസണ്‍\s*(\d+)']
+    for pattern in patterns:
+        match = re.search(pattern, title, re.IGNORECASE)
+        if match:
+            series_name = re.split(r'\s+Season\s+\d|\s+സീസൺ\s+\d', title, 1, re.IGNORECASE)[0].strip()
+            return {'is_series': True, 'season_number': int(match.group(1)), 'series_name': series_name}
+    return {'is_series': False, 'season_number': None, 'series_name': None}
 
 def scrape_page_details(url: str) -> Optional[Dict]:
     soup = _get_soup(url)
@@ -57,10 +65,10 @@ def scrape_page_details(url: str) -> Optional[Dict]:
     try:
         details = {'source_url': url}
         details['title'] = _clean_text(soup.select_one('h1.entry-title, h1#release-title').get_text())
+        details.update(_extract_season_info(details['title']))
         if imdb_tag := soup.select_one('a#imdb-button, a[href*="imdb.com"]'):
             details['imdb_url'] = imdb_tag.get('href')
             details['imdb_id'] = _extract_imdb_id(details['imdb_url'])
-        # This is a full scraper, add all fields needed
         if srt_tag := soup.select_one('a#download-button'):
             details['srt_url'] = srt_tag.get('data-downloadurl') or srt_tag.get('href')
         if poster_tag := soup.select_one('figure#release-poster img, .entry-content figure img'):
@@ -99,13 +107,13 @@ async def upsert_subtitle(details: dict):
     season_info = _extract_season_info(details.get('title', ''))
     unique_id = f"{details['imdb_id']}-S{season_info['season_number']}" if season_info.get('is_series') else details['imdb_id']
     query = """
-        INSERT INTO subtitles (unique_id, imdb_id, title, source_url, scraped_at, srt_url, poster_url, imdb_url, description)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        INSERT INTO subtitles (unique_id, imdb_id, title, source_url, scraped_at, srt_url, poster_url, imdb_url, description, is_series, season_number, series_name)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         ON CONFLICT (unique_id) DO UPDATE SET
             title = EXCLUDED.title, scraped_at = EXCLUDED.scraped_at, srt_url = EXCLUDED.srt_url,
             poster_url = EXCLUDED.poster_url, imdb_url = EXCLUDED.imdb_url, description = EXCLUDED.description;
     """
-    await db_pool.execute(query, unique_id, details['imdb_id'], details.get('title'), details.get('source_url'), datetime.now(), details.get('srt_url'), details.get('poster_url'), details.get('imdb_url'), details.get('description'))
+    await db_pool.execute(query, unique_id, details['imdb_id'], details.get('title'), details.get('source_url'), datetime.now(), details.get('srt_url'), details.get('poster_url'), details.get('imdb_url'), details.get('description'), season_info['is_series'], season_info['season_number'], season_info['series_name'])
 
 async def check_user_membership(user_id: int) -> bool:
     if not FORCE_SUB_CHANNEL_ID: return True
@@ -114,12 +122,41 @@ async def check_user_membership(user_id: int) -> bool:
         return member.get('result', {}).get('status') not in ['left', 'kicked']
     except Exception: return False
 
-# --- Core Handlers & Bot Logic ---
+# --- Formatting & Keyboards ---
+def create_menu_keyboard(current: str) -> Dict:
+    buttons = [{'text': "ℹ️ About", 'callback_data': 'menu_about'}, {'text': "❓ Help", 'callback_data': 'menu_help'}]
+    if current != 'home': buttons.insert(0, {'text': "🏠 Home", 'callback_data': 'menu_home'})
+    return {'inline_keyboard': [buttons, [{'text': '❌ Close', 'callback_data': 'menu_close'}]]}
+
+def create_search_results_keyboard(results: List[asyncpg.Record]) -> Dict:
+    keyboard = [[{'text': f"{r['title']} ({r['year']})" if r['year'] else r['title'], 'callback_data': f"view_{r['unique_id']}"}] for r in results]
+    keyboard.append([{'text': '❌ Close', 'callback_data': 'menu_close'}])
+    return {'inline_keyboard': keyboard}
+
+def create_detail_keyboard(entry: asyncpg.Record) -> Dict:
+    keyboard = []
+    if entry.get('srt_url'): keyboard.append([{'text': '📥 Download Subtitle', 'callback_data': f"download_{entry['unique_id']}"}])
+    if entry.get('imdb_url'): keyboard.append([{'text': '🎬 View on IMDb', 'url': entry['imdb_url']}])
+    keyboard.append([{'text': '🔙 Back', 'callback_data': 'menu_home'}, {'text': '❌ Close', 'callback_data': 'menu_close'}])
+    return {'inline_keyboard': keyboard}
+
+# --- Core Handlers ---
+async def handle_callback_query(callback_data: str, message: dict, chat_id: str) -> Optional[Dict]:
+    action, _, value = callback_data.partition('_')
+    if action == 'menu':
+        if value == 'close': return {'method': 'deleteMessage', 'chat_id': chat_id, 'message_id': message['message_id']}
+        text_map = {'home': WELCOME_MESSAGE, 'about': ABOUT_MESSAGE, 'help': HELP_MESSAGE}
+        if text := text_map.get(value):
+            return {'method': 'editMessageText', 'text': text, 'reply_markup': create_menu_keyboard(value), 'parse_mode': 'Markdown', 'chat_id': chat_id, 'message_id': message['message_id']}
+    elif action == 'view' and (entry := await db_pool.fetchrow("SELECT * FROM subtitles WHERE unique_id = $1", value)):
+        return {'method': 'editMessageText', 'chat_id': chat_id, 'message_id': message['message_id'], 'text': f"**{entry['title']}**", 'reply_markup': create_detail_keyboard(entry)}
+    return None
+
 async def handle_telegram_message(message_data: dict) -> Optional[Dict]:
-    user, message, cb_data = None, None, None
+    user, message = None, None
     if 'callback_query' in message_data:
         cb = message_data['callback_query']
-        user, message, cb_data = cb['from'], cb['message'], cb['data']
+        user, message = cb['from'], cb['message']
     elif 'message' in message_data:
         message = message_data['message']
         user = message.get('from')
@@ -127,38 +164,27 @@ async def handle_telegram_message(message_data: dict) -> Optional[Dict]:
     if not user or not (user_id := user.get('id')): return None
 
     if not await check_user_membership(user_id):
-        if cb_data: await send_telegram_message({'method': 'answerCallbackQuery', 'callback_query_id': cb['id'], 'text': "You must join our channel to use the bot!", 'show_alert': True})
-        return {'chat_id': user['id'], 'text': "You must join our channel to use this bot.", 'reply_markup': {'inline_keyboard': [[{'text': "Join Channel", 'url': FORCE_SUB_CHANNEL_LINK}]]}}
+        if 'callback_query' in message_data: await send_telegram_message({'method': 'answerCallbackQuery', 'callback_query_id': message_data['callback_query']['id'], 'text': "Please join our channel to use the bot.", 'show_alert': True})
+        return {'chat_id': user_id, 'text': "You must join our channel to use this bot.", 'reply_markup': {'inline_keyboard': [[{'text': "Join Channel", 'url': FORCE_SUB_CHANNEL_LINK}]]}}
 
-    await db_pool.execute("INSERT INTO users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", user_id)
+    await add_user(user_id)
 
-    if cb_data: # Callback Query
-        action, _, value = cb_data.partition('_')
-        if action == 'view' and (entry := await db_pool.fetchrow("SELECT * FROM subtitles WHERE unique_id = $1", value)):
-            # Simplified logic for brevity
-            return {'method': 'editMessageText', 'chat_id': message['chat']['id'], 'message_id': message['message_id'], 'text': f"**{entry['title']}**", 'reply_markup': create_detail_keyboard(entry)}
-        return {'method': 'answerCallbackQuery', 'callback_query_id': cb['id']}
+    if 'callback_query' in message_data:
+        if response := await handle_callback_query(message_data['callback_query']['data'], message, str(message['chat']['id'])):
+            await send_telegram_message(response)
+        return {'method': 'answerCallbackQuery', 'callback_query_id': message_data['callback_query']['id']}
 
     text = message.get('text', '').strip()
     if not text: return None
 
     if text.startswith('/'): # Commands
         command, *args = text.split()
-        if command == '/start': return {'chat_id': user_id, 'text': WELCOME_MESSAGE}
-        if command == '/feedback': return {'chat_id': user_id, 'text': "📝 Please send your feedback now.", 'reply_markup': {'force_reply': True}}
-        if str(user_id) == OWNER_ID and args:
-            if command == '/add' and (details := scrape_page_details(args[0])):
+        if command == '/start': return {'chat_id': user_id, 'text': WELCOME_MESSAGE, 'reply_markup': create_menu_keyboard('home')}
+        if str(user_id) == OWNER_ID and command == '/add' and args:
+            if details := scrape_page_details(args[0]):
                 await upsert_subtitle(details)
                 return {'chat_id': user_id, 'text': f"✅ Added/Updated **{details['title']}**."}
-
-    if reply := message.get('reply_to_message'): # Feedback Reply
-        if reply.get('from', {}).get('is_bot') and "Send Your Feedback" in reply.get('text', ''):
-            user_details = f"📝 Feedback from [{user.get('first_name')}](tg://user?id={user_id})"
-            if LOG_GROUP_ID:
-                if message.get('text'): await send_telegram_message({'chat_id': LOG_GROUP_ID, 'text': f"{user_details}:\n\n{message['text']}", 'parse_mode': 'Markdown'})
-                elif photo := message.get('photo'): await send_telegram_message({'method': 'sendPhoto', 'chat_id': LOG_GROUP_ID, 'photo': photo[-1]['file_id'], 'caption': user_details, 'parse_mode': 'Markdown'})
-            await send_telegram_message({'chat_id': user_id, 'text': "✅ Thank you for your feedback!"})
-            return None
+            return {'chat_id': user_id, 'text': "❌ Failed to scrape or add entry."}
 
     # Search
     if len(text) > 1 and (results := await db_pool.fetch("SELECT * FROM subtitles WHERE title ILIKE $1 LIMIT 10", f"%{text}%")):
@@ -179,7 +205,7 @@ async def send_telegram_message(data: dict):
         return {}
 
 # --- FastAPI App ---
-app = FastAPI(title="Subtitle Search Bot API", version="3.2", redoc_url=None, docs_url=None)
+app = FastAPI(title="Subtitle Search Bot API", version="3.3", redoc_url=None, docs_url=None)
 @app.on_event("startup")
 async def startup_event(): await init_db()
 @app.on_event("shutdown")
@@ -188,11 +214,11 @@ async def shutdown_event():
 
 @app.post("/telegram")
 async def telegram_webhook(request: Request):
-    if WEBHOOK_SECRET != request.headers.get("X-Telegram-Bot-Api-Secret-Token"): return Response(status_code=HTTPStatus.FORBIDDEN)
+    if WEBHOOK_SECRET != request.headers.get("X-Telegram-Bot-Api-Secret-Token"): return Response(status_code=403)
     try:
         if response_data := await handle_telegram_message(await request.json()):
             await send_telegram_message(response_data)
-        return Response(status_code=HTTPStatus.OK)
+        return Response(status_code=200)
     except Exception as e:
         logger.error(f"Webhook error: {e}")
-        return Response(status_code=HTTPStatus.INTERNAL_SERVER_ERROR)
+        return Response(status_code=500)
