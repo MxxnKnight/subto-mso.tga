@@ -224,8 +224,9 @@ async def process_download(unique_id: str, chat_id: str):
                 file_content = await resp.read()
         logger.info(f"Successfully downloaded {len(file_content)} bytes.")
 
-        if entry['srt_url'].endswith('.zip'):
-            logger.info("Detected .zip file. Starting extraction.")
+        # A ZIP file starts with b'PK'. This is more reliable than checking the URL.
+        if file_content.startswith(b'PK'):
+            logger.info("Detected .zip file by magic bytes. Starting extraction.")
             with io.BytesIO(file_content) as zip_buffer:
                 with zipfile.ZipFile(zip_buffer) as zip_file:
                     count = 0
