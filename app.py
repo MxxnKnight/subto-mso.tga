@@ -214,8 +214,9 @@ async def process_download(unique_id: str, chat_id: str):
 
     try:
         logger.info(f"Attempting to download file from {entry['srt_url']}")
+        headers = {'User-Agent': 'Mozilla/5.0'}
         async with aiohttp.ClientSession() as session:
-            async with session.get(entry['srt_url']) as resp:
+            async with session.get(entry['srt_url'], headers=headers) as resp:
                 logger.info(f"Download response status: {resp.status}")
                 if resp.status != 200:
                     await send_telegram_message({'chat_id': chat_id, 'text': "Sorry, I couldn't download the file."})
