@@ -36,6 +36,14 @@ db_pool: Optional[asyncpg.Pool] = None
 WELCOME_MESSAGE = "**🎬 Welcome to Malayalam Subtitle Search Bot!**\n\nYour one-stop destination for high-quality Malayalam subtitles for movies and TV shows."
 ABOUT_MESSAGE = "**ℹ️ About This Bot**\n\n**🌐 Technical Details:**\n- **Hosted on:** Render.com\n- **Framework:** FastAPI\n- **Database:** PostgreSQL\n- **Developer:** [@Mxxn_Knight](tg://resolve?domain=Mxxn_Knight)\n- **Version:** 3.3"
 HELP_MESSAGE = "**❓ How to Use This Bot**\n\n**🔍 Searching:**\n• Type any movie/series name\n• Use English names for better results\n• Add year for specific versions (e.g., \"Dune 2021\")"
+AHELP_MESSAGE = """
+**Admin Commands**
+
+- `/stats`: Get statistics about the bot's usage and data.
+- `/add <url>`: Manually add or update a subtitle from a malayalamsubtitles.org URL.
+- `/broadcast`: Reply to a message with this command to broadcast it to all users.
+- `/ahelp`: Show this help message.
+"""
 
 # --- Self-Contained Scraper Logic ---
 def _get_soup(url: str) -> Optional[BeautifulSoup]:
@@ -147,6 +155,48 @@ def create_detail_keyboard(entry: asyncpg.Record) -> Dict:
     keyboard.append([{'text': '🔙 Back', 'callback_data': 'menu_home'}, {'text': '❌ Close', 'callback_data': 'menu_close'}])
     return {'inline_keyboard': keyboard}
 
+async def run_broadcast(message: dict):
+    owner_id = message['from']['id']
+    replied_message = message['reply_to_message']
+
+    if not db_pool:
+        await send_telegram_message({'chat_id': owner_id, 'text': "Database not connected. Broadcast aborted."})
+        return
+
+    users = await db_pool.fetch("SELECT user_id FROM users")
+    if not users:
+        await send_telegram_message({'chat_id': owner_id, 'text': "No users in database to broadcast to."})
+        return
+
+    tasks = []
+    for user in users:
+        task = send_telegram_message({
+            'method': 'copyMessage',
+            'chat_id': user['user_id'],
+            'from_chat_id': replied_message['chat']['id'],
+            'message_id': replied_message['message_id']
+        })
+        tasks.append(task)
+        await asyncio.sleep(0.05)  # To avoid hitting API rate limits
+
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    success_count = sum(1 for r in results if isinstance(r, dict) and r.get('ok'))
+    failed_count = len(results) - success_count
+
+    report_text = (
+        f"**Broadcast Complete**\n\n"
+        f"✅ **Sent to:** {success_count} users\n"
+        f"❌ **Failed for:** {failed_count} users"
+    )
+
+    await send_telegram_message({
+        'chat_id': owner_id,
+        'text': report_text,
+        'parse_mode': 'Markdown',
+        'reply_markup': {'inline_keyboard': [[{'text': '❌ Close', 'callback_data': 'menu_close'}]]}
+    })
+
 # --- Core Handlers ---
 async def handle_callback_query(callback_data: str, message: dict, chat_id: str) -> Optional[Dict]:
     action, _, value = callback_data.partition('_')
@@ -187,11 +237,40 @@ async def handle_telegram_message(message_data: dict) -> Optional[Dict]:
     if text.startswith('/'): # Commands
         command, *args = text.split()
         if command == '/start': return {'chat_id': user_id, 'text': WELCOME_MESSAGE, 'reply_markup': create_menu_keyboard('home')}
-        if str(user_id) == OWNER_ID and command == '/add' and args:
-            if details := scrape_page_details(args[0]):
-                await upsert_subtitle(details)
-                return {'chat_id': user_id, 'text': f"✅ Added/Updated **{details['title']}**."}
-            return {'chat_id': user_id, 'text': "❌ Failed to scrape or add entry."}
+
+        if str(user_id) == OWNER_ID:
+            if command == '/ahelp':
+                return {'chat_id': user_id, 'text': AHELP_MESSAGE, 'parse_mode': 'Markdown'}
+
+            if command == '/stats':
+                if not db_pool: return {'chat_id': user_id, 'text': "Database not connected."}
+
+                total_users = await db_pool.fetchval("SELECT COUNT(*) FROM users")
+                total_entries = await db_pool.fetchval("SELECT COUNT(*) FROM subtitles")
+                movie_count = await db_pool.fetchval("SELECT COUNT(*) FROM subtitles WHERE is_series = false")
+                series_count = await db_pool.fetchval("SELECT COUNT(*) FROM subtitles WHERE is_series = true")
+
+                stats_text = (
+                    f"**Bot Statistics**\n\n"
+                    f"👥 **Total Users:** {total_users}\n"
+                    f"🎬 **Total Entries:** {total_entries}\n"
+                    f"  - **Movies:** {movie_count}\n"
+                    f"  - **Series:** {series_count}"
+                )
+                return {'chat_id': user_id, 'text': stats_text, 'parse_mode': 'Markdown'}
+
+            if command == '/add' and args:
+                if details := scrape_page_details(args[0]):
+                    await upsert_subtitle(details)
+                    return {'chat_id': user_id, 'text': f"✅ Added/Updated **{details['title']}**."}
+                return {'chat_id': user_id, 'text': "❌ Failed to scrape or add entry."}
+
+            if command == '/broadcast':
+                if not message.get('reply_to_message'):
+                    return {'chat_id': user_id, 'text': "Please reply to a message to broadcast it."}
+
+                asyncio.create_task(run_broadcast(message))
+                return {'chat_id': user_id, 'text': "Broadcast started... I will send a report when it's complete."}
 
     # Search
     if len(text) > 1 and (results := await db_pool.fetch("SELECT * FROM subtitles WHERE title ILIKE $1 LIMIT 10", f"%{text}%")):
