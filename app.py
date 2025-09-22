@@ -228,15 +228,16 @@ async def process_download(unique_id: str, chat_id: str):
             logger.info("Detected .zip file. Starting extraction.")
             with io.BytesIO(file_content) as zip_buffer:
                 with zipfile.ZipFile(zip_buffer) as zip_file:
-                    srt_files = [f for f in zip_file.namelist() if f.lower().endswith('.srt')]
-                    logger.info(f"Found {len(srt_files)} .srt files in zip: {srt_files}")
-                    if not srt_files:
-                        await send_telegram_message({'chat_id': chat_id, 'text': "Sorry, I couldn't find any subtitle files in that ZIP archive."})
-                        return
+                    count = 0
+                    for file_info in zip_file.infolist():
+                        if file_info.is_dir() or not file_info.filename.lower().endswith('.srt'):
+                            continue
 
-                    for filename in srt_files:
+                        count += 1
+                        filename = file_info.filename
                         sub_content = zip_file.read(filename)
-                        logger.info(f"Uploading {filename} ({len(sub_content)} bytes)")
+
+                        logger.info(f"Uploading file {count}: {filename} ({len(sub_content)} bytes)")
                         form = aiohttp.FormData()
                         form.add_field('chat_id', chat_id)
                         form.add_field('document', sub_content, filename=filename, content_type='text/plain')
@@ -244,6 +245,10 @@ async def process_download(unique_id: str, chat_id: str):
                         upload_response = await send_telegram_message(form)
                         logger.info(f"Upload response for {filename}: {upload_response}")
                         await asyncio.sleep(0.5)
+
+                    if count == 0:
+                        logger.warning(f"No .srt files found in zip for {unique_id}")
+                        await send_telegram_message({'chat_id': chat_id, 'text': "Sorry, I couldn't find any subtitle files in that ZIP archive."})
         else:
             logger.info("Detected single file. Preparing for upload.")
             filename = f"{entry['title']}.srt"
