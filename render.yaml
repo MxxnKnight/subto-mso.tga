@@ -1,10 +1,8 @@
 services:
   - type: web
     name: subtitle-bot
-    env: python
-    prebuildCommand: "apt-get update && apt-get install -y libpq-dev build-essential"
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "uvicorn app:app --host 0.0.0.0 --port $PORT"
+    env: docker
+    dockerfilePath: ./Dockerfile
     healthCheckPath: /healthz
     envVars:
       - key: TELEGRAM_BOT_TOKEN
@@ -13,5 +11,9 @@ services:
         generateValue: true
       - key: OWNER_ID
         sync: false
-      - key: PYTHON_VERSION
-        value: 3.11.4
+      - key: DATABASE_URL
+        sync: false
+      - key: LOG_GROUP_ID
+        sync: false
+      - key: LOG_TOPIC_ID
+        sync: false
