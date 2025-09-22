@@ -4,6 +4,7 @@ import logging
 import asyncio
 import zipfile
 import tempfile
+import io
 from typing import Dict, Any, List, Optional
 from urllib.parse import urljoin
 import re
@@ -197,37 +198,96 @@ async def run_broadcast(message: dict):
         'reply_markup': {'inline_keyboard': [[{'text': '❌ Close', 'callback_data': 'menu_close'}]]}
     })
 
+async def process_download(unique_id: str, chat_id: str):
+    if not db_pool: return
+    entry = await db_pool.fetchrow("SELECT title, srt_url FROM subtitles WHERE unique_id = $1", unique_id)
+    if not entry or not entry['srt_url']:
+        await send_telegram_message({'chat_id': chat_id, 'text': "Sorry, the download link is missing."})
+        return
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(entry['srt_url']) as resp:
+                if resp.status != 200:
+                    await send_telegram_message({'chat_id': chat_id, 'text': "Sorry, I couldn't download the file."})
+                    return
+                file_content = await resp.read()
+
+        if entry['srt_url'].endswith('.zip'):
+            with io.BytesIO(file_content) as zip_buffer:
+                with zipfile.ZipFile(zip_buffer) as zip_file:
+                    for filename in zip_file.namelist():
+                        if filename.lower().endswith('.srt'):
+                            sub_content = zip_file.read(filename)
+                            # Sending document requires a multipart/form-data POST, which is complex with json.
+                            # Instead, we'll use aiohttp to send it directly.
+                            form = aiohttp.FormData()
+                            form.add_field('chat_id', chat_id)
+                            form.add_field('document', sub_content, filename=filename, content_type='text/plain')
+                            form.add_field('caption', filename)
+                            await send_telegram_message(form)
+                            await asyncio.sleep(0.5) # Rate limit
+        else:
+            filename = f"{entry['title']}.srt"
+            form = aiohttp.FormData()
+            form.add_field('chat_id', chat_id)
+            form.add_field('document', file_content, filename=filename, content_type='text/plain')
+            await send_telegram_message(form)
+
+    except Exception as e:
+        logger.error(f"Download processing failed for {unique_id}: {e}")
+        await send_telegram_message({'chat_id': chat_id, 'text': "An error occurred while processing the file."})
+
+
 # --- Core Handlers ---
-async def handle_callback_query(callback_data: str, message: dict, chat_id: str) -> Optional[Dict]:
-    action, _, value = callback_data.partition('_')
+async def handle_callback_query(callback_query: dict) -> Optional[Dict]:
+    action, _, value = callback_query['data'].partition('_')
+    message = callback_query['message']
+    chat_id = str(message['chat']['id'])
+
     if action == 'menu':
         if value == 'close': return {'method': 'deleteMessage', 'chat_id': chat_id, 'message_id': message['message_id']}
         text_map = {'home': WELCOME_MESSAGE, 'about': ABOUT_MESSAGE, 'help': HELP_MESSAGE}
         if text := text_map.get(value):
             return {'method': 'editMessageText', 'text': text, 'reply_markup': create_menu_keyboard(value), 'parse_mode': 'Markdown', 'chat_id': chat_id, 'message_id': message['message_id']}
+
     elif action == 'view' and (entry := await db_pool.fetchrow("SELECT * FROM subtitles WHERE unique_id = $1", value)):
-        return {'method': 'editMessageText', 'chat_id': chat_id, 'message_id': message['message_id'], 'text': f"**{entry['title']}**", 'reply_markup': create_detail_keyboard(entry)}
+        await send_telegram_message({'method': 'deleteMessage', 'chat_id': chat_id, 'message_id': message['message_id']})
+        caption = f"**{entry['title']}**\n"
+        if entry.get('year'): caption += f"**Year:** {entry['year']}\n"
+        if entry.get('description'): caption += f"\n**Synopsis:**\n{entry['description']}"
+        payload = {'chat_id': chat_id, 'caption': caption, 'parse_mode': 'Markdown', 'reply_markup': create_detail_keyboard(entry)}
+        if entry.get('poster_url'):
+            payload.update({'method': 'sendPhoto', 'photo': entry['poster_url']})
+            if (response := await send_telegram_message(payload)) and response.get('ok'): return None
+        del payload['caption']; payload.update({'method': 'sendMessage', 'text': caption})
+        await send_telegram_message(payload)
+        return None
+
+    elif action == 'download':
+        asyncio.create_task(process_download(value, chat_id))
+        return {'method': 'answerCallbackQuery', 'callback_query_id': callback_query['id'], 'text': "Please wait, preparing your download..."}
+
     return None
 
 async def handle_telegram_message(message_data: dict) -> Optional[Dict]:
     user, message = None, None
     if 'callback_query' in message_data:
-        cb = message_data['callback_query']
-        user, message = cb['from'], cb['message']
+        user, message = message_data['callback_query']['from'], message_data['callback_query']['message']
     elif 'message' in message_data:
-        message = message_data['message']
-        user = message.get('from')
+        user, message = message_data['message'].get('from'), message_data['message']
 
     if not user or not (user_id := user.get('id')): return None
 
     if not await check_user_membership(user_id):
-        if 'callback_query' in message_data: await send_telegram_message({'method': 'answerCallbackQuery', 'callback_query_id': message_data['callback_query']['id'], 'text': "Please join our channel to use the bot.", 'show_alert': True})
+        if 'callback_query' in message_data:
+            await send_telegram_message({'method': 'answerCallbackQuery', 'callback_query_id': message_data['callback_query']['id'], 'text': "Please join our channel to use the bot.", 'show_alert': True})
         return {'chat_id': user_id, 'text': "You must join our channel to use this bot.", 'reply_markup': {'inline_keyboard': [[{'text': "Join Channel", 'url': FORCE_SUB_CHANNEL_LINK}]]}}
 
     await add_user(user_id)
 
     if 'callback_query' in message_data:
-        if response := await handle_callback_query(message_data['callback_query']['data'], message, str(message['chat']['id'])):
+        if response := await handle_callback_query(message_data['callback_query']):
             await send_telegram_message(response)
         return {'method': 'answerCallbackQuery', 'callback_query_id': message_data['callback_query']['id']}
 
@@ -273,18 +333,30 @@ async def handle_telegram_message(message_data: dict) -> Optional[Dict]:
                 return {'chat_id': user_id, 'text': "Broadcast started... I will send a report when it's complete."}
 
     # Search
-    if len(text) > 1 and (results := await db_pool.fetch("SELECT * FROM subtitles WHERE title ILIKE $1 LIMIT 10", f"%{text}%")):
-        return {'chat_id': user_id, 'text': f"🔍 Found these for '{text}':", 'reply_markup': create_search_results_keyboard(results)}
+    if len(text) > 1:
+        query = """
+            SELECT *, similarity(title, $1) AS score
+            FROM subtitles
+            WHERE similarity(title, $1) > 0.15
+            ORDER BY score DESC
+            LIMIT 10
+        """
+        if results := await db_pool.fetch(query, text):
+            return {'chat_id': user_id, 'text': f"🔍 Found these for '{text}':", 'reply_markup': create_search_results_keyboard(results)}
     return {'chat_id': user_id, 'text': f'😔 No subtitles found for "{text}"'}
 
-async def send_telegram_message(data: dict):
+async def send_telegram_message(data: Any):
     if not TOKEN or not data: return {}
-    method = data.pop('method', 'sendMessage')
+
+    method = 'sendDocument' if isinstance(data, aiohttp.FormData) else data.pop('method', 'sendMessage')
     url = f"https://api.telegram.org/bot{TOKEN}/{method}"
+
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=data) as resp:
-                if resp.status != 200: logger.error(f"Telegram API Error: {await resp.text()}")
+            post_kwargs = {'json': data} if isinstance(data, dict) else {'data': data}
+            async with session.post(url, **post_kwargs) as resp:
+                if resp.status != 200:
+                    logger.error(f"Telegram API Error: {await resp.text()}")
                 return await resp.json()
     except Exception as e:
         logger.error(f"Error sending message: {e}")
