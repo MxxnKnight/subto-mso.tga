@@ -115,6 +115,13 @@ async def upsert_subtitle(details: dict):
     """
     await db_pool.execute(query, unique_id, details['imdb_id'], details.get('title'), details.get('source_url'), datetime.now(), details.get('srt_url'), details.get('poster_url'), details.get('imdb_url'), details.get('description'), season_info['is_series'], season_info['season_number'], season_info['series_name'])
 
+async def add_user(user_id: int):
+    if not db_pool: return
+    try:
+        await db_pool.execute("INSERT INTO users (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING;", user_id)
+    except Exception as e:
+        logger.error(f"Failed to add user {user_id}: {e}")
+
 async def check_user_membership(user_id: int) -> bool:
     if not FORCE_SUB_CHANNEL_ID: return True
     try:
