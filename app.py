@@ -166,6 +166,34 @@ async def handle_telegram_message(message_data: dict) -> Optional[Dict]:
     message = message_data.get('message', {})
     text, chat_id, user = message.get('text', '').strip(), message.get('chat', {}).get('id'), message.get('from', {})
     if not (user_id := user.get('id')) or not db_pool: return None
+
+    # --- Feedback Handling Logic ---
+    if reply := message.get('reply_to_message'):
+        if reply.get('from', {}).get('is_bot') and "Send Your Feedback" in reply.get('text', ''):
+            # 1. Format user details
+            user_details = (
+                f"📝 **New Feedback**\n\n"
+                f"**From:** [{user.get('first_name', '')}](tg://user?id={user_id})\n"
+                f"**Username:** @{user.get('username', 'N/A')}\n"
+                f"**ID:** `{user_id}`\n"
+                f"--------------------\n"
+            )
+            # 2. Forward the feedback to the log group/admin
+            if LOG_GROUP_ID:
+                if message.get('text'):
+                    await send_telegram_message({'chat_id': LOG_GROUP_ID, 'text': user_details + message.get('text'), 'parse_mode': 'Markdown'})
+                elif message.get('photo'):
+                    await send_telegram_message({'method': 'sendPhoto', 'chat_id': LOG_GROUP_ID, 'photo': message['photo'][-1]['file_id'], 'caption': user_details, 'parse_mode': 'Markdown'})
+
+            # 3. Send confirmation and schedule cleanup
+            confirm_msg = await send_telegram_message({'chat_id': chat_id, 'text': "✅ Thank you! Your feedback has been sent."})
+            if confirm_msg_id := confirm_msg.get('result', {}).get('message_id'):
+                await asyncio.sleep(5)
+                await send_telegram_message({'method': 'deleteMessage', 'chat_id': chat_id, 'message_id': reply.get('message_id')})
+                await send_telegram_message({'method': 'deleteMessage', 'chat_id': chat_id, 'message_id': confirm_msg_id})
+
+            return None # Stop further processing
+
     await add_user(user_id)
 
     if text.startswith('/'):
@@ -187,6 +215,12 @@ async def handle_telegram_message(message_data: dict) -> Optional[Dict]:
                 return {'chat_id': chat_id, 'text': f"❌ Failed to rescrape `{args[0]}`."}
 
         if command == '/start': return {'chat_id': chat_id, 'text': WELCOME_MESSAGE, 'reply_markup': create_menu_keyboard('home'), 'parse_mode': 'Markdown'}
+        if command == '/feedback':
+            return {
+                'chat_id': chat_id,
+                'text': "📝 **Send Your Feedback**\n\nPlease send your feedback now. You can send text or an image.",
+                'reply_markup': {'force_reply': True, 'selective': True, 'input_field_placeholder': 'Your feedback...'}
+            }
 
     if len(text) < 2: return {'chat_id': chat_id, 'text': "Please use at least 2 characters."}
     if results := await search_content(text):
