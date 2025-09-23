@@ -33,6 +33,7 @@ BASE_URL = "https://malayalamsubtitles.org"
 # --- Global Variables ---
 db_pool: Optional[asyncpg.Pool] = None
 admin_tasks: Dict[str, str] = {} # To track next action for owner
+feedback_tasks: Dict[int, bool] = {} # To track users who are sending feedback
 
 # --- Menu Messages ---
 WELCOME_MESSAGE = "**🎬 Welcome to Malayalam Subtitle Search Bot!**\n\nYour one-stop destination for high-quality Malayalam subtitles for movies and TV shows."
@@ -558,6 +559,21 @@ async def handle_telegram_message(message_data: dict) -> Optional[Dict]:
         return {'method': 'answerCallbackQuery', 'callback_query_id': message_data['callback_query']['id']}
 
     text = message.get('text', '').strip()
+
+    # --- Handle pending feedback tasks ---
+    if feedback_tasks.pop(user_id, False):
+        if OWNER_ID:
+            await send_telegram_message({
+                'method': 'forwardMessage',
+                'chat_id': OWNER_ID,
+                'from_chat_id': user_id,
+                'message_id': message['message_id']
+            })
+            return {'chat_id': user_id, 'text': "✅ Thank you, your feedback has been sent."}
+        else:
+            logger.warning("Feedback received but no OWNER_ID is set to forward it to.")
+            return {'chat_id': user_id, 'text': "Sorry, I couldn't send your feedback at this time."}
+
     if not text: return None
 
     # --- Handle pending admin tasks ---
@@ -591,6 +607,10 @@ async def handle_telegram_message(message_data: dict) -> Optional[Dict]:
     if text.startswith('/'): # Commands
         command, *args = text.split()
         if command == '/start': return {'chat_id': user_id, 'text': WELCOME_MESSAGE, 'reply_markup': create_menu_keyboard('home')}
+
+        if command == '/feedback':
+            feedback_tasks[user_id] = True
+            return {'chat_id': user_id, 'text': "Thank you for your willingness to provide feedback. Please send your message now, and I will forward it to the admin."}
 
         if str(user_id) == OWNER_ID:
             if command == '/ahelp':
