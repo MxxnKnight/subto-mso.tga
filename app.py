@@ -158,17 +158,12 @@ async def rescrape_subtitle(unique_id: str) -> str:
         if not record or not record['source_url']:
             return f"Rescrape failed: No source_url found for {unique_id}"
 
-        details = scrape_page_details(record['source_url'])
-        if details:
-            await upsert_subtitle(details)
-            # Return a summary of the scraped details for debugging
-            debug_summary = {k: f"'{v['name']}'" if isinstance(v, dict) else str(type(v)) for k, v in details.items()}
-            return f"Scraped Data Summary:\n```json\n{json.dumps(debug_summary, indent=2)}```"
-        else:
-            return f"Rescrape failed: Scraping returned no details for {record['source_url']}"
+        # Return the URL for debugging
+        return f"Attempting to scrape URL: {record['source_url']}"
+
     except Exception as e:
-        logger.error(f"Failed to rescrape subtitle {unique_id}: {e}")
-        return f"An exception occurred during rescrape: {e}"
+        logger.error(f"Failed to fetch source_url for {unique_id}: {e}")
+        return f"An exception occurred while fetching the URL: {e}"
 
 async def init_db():
     global db_pool
