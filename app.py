@@ -151,24 +151,23 @@ async def remove_subtitle(unique_id: str) -> bool:
         logger.error(f"Failed to remove subtitle {unique_id}: {e}")
         return False
 
-async def rescrape_subtitle(unique_id: str) -> bool:
-    if not db_pool: return False
+async def rescrape_subtitle(unique_id: str) -> str:
+    if not db_pool: return "Database not connected."
     try:
         record = await db_pool.fetchrow("SELECT source_url FROM subtitles WHERE unique_id = $1", unique_id)
         if not record or not record['source_url']:
-            logger.warning(f"Rescrape failed: No source_url found for {unique_id}")
-            return False
+            return f"Rescrape failed: No source_url found for {unique_id}"
 
-        if details := scrape_page_details(record['source_url']):
+        details = scrape_page_details(record['source_url'])
+        if details:
             await upsert_subtitle(details)
-            logger.info(f"Successfully rescraped and updated {unique_id}")
-            return True
+            # Return the scraped details for debugging
+            return f"Scraped Data:\n```json\n{json.dumps(details, indent=2)}```"
         else:
-            logger.error(f"Rescrape failed: Scraping returned no details for {record['source_url']}")
-            return False
+            return f"Rescrape failed: Scraping returned no details for {record['source_url']}"
     except Exception as e:
         logger.error(f"Failed to rescrape subtitle {unique_id}: {e}")
-        return False
+        return f"An exception occurred during rescrape: {e}"
 
 async def init_db():
     global db_pool
@@ -589,9 +588,8 @@ async def handle_telegram_message(message_data: dict) -> Optional[Dict]:
                 return {'chat_id': user_id, 'text': f"✅ Entry `{input_value}` has been removed."}
             return {'chat_id': user_id, 'text': f"❌ Failed to remove entry `{input_value}`."}
         elif task == 'rescrape':
-            if await rescrape_subtitle(input_value):
-                return {'chat_id': user_id, 'text': f"✅ Entry `{input_value}` has been rescraped."}
-            return {'chat_id': user_id, 'text': f"❌ Failed to rescrape entry `{input_value}`."}
+            debug_output = await rescrape_subtitle(input_value)
+            return {'chat_id': user_id, 'text': debug_output, 'parse_mode': 'Markdown'}
         elif task == 'view':
             # Reuse the existing view logic by crafting a fake callback query
             fake_callback = {
