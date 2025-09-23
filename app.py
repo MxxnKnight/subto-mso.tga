@@ -289,39 +289,39 @@ async def check_user_membership(user_id: int) -> bool:
 
 # --- Formatting & Keyboards ---
 def create_menu_keyboard(current: str) -> Dict:
-    buttons = [{'text': "ℹ️ About", 'callback_data': 'menu_about'}, {'text': "❓ Help", 'callback_data': 'menu_help'}]
-    if current != 'home': buttons.insert(0, {'text': "🏠 Home", 'callback_data': 'menu_home'})
-    return {'inline_keyboard': [buttons, [{'text': '❌ Close', 'callback_data': 'menu_close'}]]}
+    buttons = [{'text': "About", 'callback_data': 'menu_about'}, {'text': "Help", 'callback_data': 'menu_help'}]
+    if current != 'home': buttons.insert(0, {'text': "Home", 'callback_data': 'menu_home'})
+    return {'inline_keyboard': [buttons, [{'text': 'Close', 'callback_data': 'menu_close'}]]}
 
 def create_search_results_keyboard(results: List[asyncpg.Record]) -> Dict:
     keyboard = [[{'text': f"{r['title']} ({r['year']})" if r['year'] else r['title'], 'callback_data': f"view_{r['unique_id']}"}] for r in results]
-    keyboard.append([{'text': '❌ Close', 'callback_data': 'menu_close'}])
+    keyboard.append([{'text': 'Close', 'callback_data': 'menu_close'}])
     return {'inline_keyboard': keyboard}
 
 def create_detail_keyboard(entry: asyncpg.Record, photo_msg_id: Optional[int] = None) -> Dict:
     keyboard = []
-    if entry.get('srt_url'): keyboard.append([{'text': '📥 Download Subtitle', 'callback_data': f"download_{entry['unique_id']}"}])
+    if entry.get('srt_url'): keyboard.append([{'text': 'Download Subtitle', 'callback_data': f"download_{entry['unique_id']}"}])
 
     buttons = []
-    if entry.get('imdb_url'): buttons.append({'text': '🎬 View on IMDb', 'url': entry['imdb_url']})
-    if entry.get('source_url'): buttons.append({'text': '📄 Page Link', 'url': entry['source_url']})
+    if entry.get('imdb_url'): buttons.append({'text': 'View on IMDb', 'url': entry['imdb_url']})
+    if entry.get('source_url'): buttons.append({'text': 'Page Link', 'url': entry['source_url']})
     if buttons: keyboard.append(buttons)
 
     close_callback = 'menu_close'
     if photo_msg_id:
         close_callback += f'_{photo_msg_id}'
 
-    keyboard.append([{'text': '🔙 Back', 'callback_data': 'menu_home'}, {'text': '❌ Close', 'callback_data': close_callback}])
+    keyboard.append([{'text': 'Close', 'callback_data': close_callback}])
     return {'inline_keyboard': keyboard}
 
 def create_scraper_panel_keyboard() -> Dict:
     buttons = [
-        {'text': "➕ Add", 'callback_data': 'scpr_add'},
-        {'text': "➖ Remove", 'callback_data': 'scpr_remove'},
-        {'text': "🔄 Rescrape", 'callback_data': 'scpr_rescrape'},
-        {'text': "👁️ View", 'callback_data': 'scpr_view'},
+        {'text': "Add", 'callback_data': 'scpr_add'},
+        {'text': "Remove", 'callback_data': 'scpr_remove'},
+        {'text': "Rescrape", 'callback_data': 'scpr_rescrape'},
+        {'text': "View", 'callback_data': 'scpr_view'},
     ]
-    return {'inline_keyboard': [buttons, [{'text': '❌ Close', 'callback_data': 'menu_close'}]]}
+    return {'inline_keyboard': [buttons, [{'text': 'Close', 'callback_data': 'menu_close'}]]}
 
 async def run_broadcast(message: dict):
     owner_id = message['from']['id']
@@ -575,16 +575,26 @@ async def handle_telegram_message(message_data: dict) -> Optional[Dict]:
 
     # --- Handle pending feedback tasks ---
     if feedback_tasks.pop(user_id, False):
-        if OWNER_ID:
+        if LOG_GROUP_ID:
+            user_info = f"New Feedback from:\n"
+            user_info += f"- Name: {user.get('first_name')}\n"
+            if username := user.get('username'):
+                user_info += f"- Username: @{username}\n"
+            user_info += f"- User ID: `{user_id}`\n"
+            user_info += f"- Profile: [Link](tg://user?id={user_id})"
+
+            feedback_text = message.get('text', '[No text in message]')
+            log_message = f"{user_info}\n\n**Message:**\n{feedback_text}"
+
             await send_telegram_message({
-                'method': 'forwardMessage',
-                'chat_id': OWNER_ID,
-                'from_chat_id': user_id,
-                'message_id': message['message_id']
+                'method': 'sendMessage',
+                'chat_id': LOG_GROUP_ID,
+                'text': log_message,
+                'parse_mode': 'Markdown'
             })
             return {'chat_id': user_id, 'text': "✅ Thank you, your feedback has been sent."}
         else:
-            logger.warning("Feedback received but no OWNER_ID is set to forward it to.")
+            logger.warning("Feedback received but no LOG_GROUP_ID is set to send it to.")
             return {'chat_id': user_id, 'text': "Sorry, I couldn't send your feedback at this time."}
 
     if not text: return None
