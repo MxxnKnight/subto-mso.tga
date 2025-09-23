@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 DATABASE_URL = os.environ.get("DATABASE_URL")
 BASE_URL = "https://malayalamsubtitles.org"
 RELEASES_URL = f"{BASE_URL}/releases/"
-MAX_PAGES = int(os.environ.get("SCRAPER_MAX_PAGES", "6"))
+MAX_PAGES = int(os.environ.get("SCRAPER_MAX_PAGES", "300"))
 HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
 
 # --- Helper Functions (Standalone) ---
