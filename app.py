@@ -161,8 +161,9 @@ async def rescrape_subtitle(unique_id: str) -> str:
         details = scrape_page_details(record['source_url'])
         if details:
             await upsert_subtitle(details)
-            # Return the scraped details for debugging
-            return f"Scraped Data:\n```json\n{json.dumps(details, indent=2)}```"
+            # Return a summary of the scraped details for debugging
+            debug_summary = {k: f"'{v['name']}'" if isinstance(v, dict) else str(type(v)) for k, v in details.items()}
+            return f"Scraped Data Summary:\n```json\n{json.dumps(debug_summary, indent=2)}```"
         else:
             return f"Rescrape failed: Scraping returned no details for {record['source_url']}"
     except Exception as e:
