@@ -42,6 +42,7 @@ AHELP_MESSAGE = """
 **Admin Commands**
 
 - `/stats`: Get statistics about the bot's usage and data.
+- `/scpr`: Open the admin scraper panel to add, remove, or rescrape entries.
 - `/add <url>`: Manually add or update a subtitle from a malayalamsubtitles.org URL.
 - `/broadcast`: Reply to a message with this command to broadcast it to all users.
 - `/ahelp`: Show this help message.
@@ -64,21 +65,18 @@ def _extract_year(title: str) -> Optional[str]: return match.group(1) if (match 
 
 def _extract_season_info(title: str) -> Dict[str, Any]:
     patterns = [r'Season\s*(\d+)', r'സീസൺ\s*(\d+)', r'S0?(\d+)', r'സീസണ്‍\s*(\d+)']
-    is_series = False
-    season_number = None
+
     for pattern in patterns:
         match = re.search(pattern, title, re.IGNORECASE)
         if match:
+            series_name = title[:match.start()].strip()
             season_number = int(match.group(1))
-            is_series = True
-            break
-    if not is_series and any(keyword in title.lower() for keyword in ['season', 'series', 'സീസൺ', 'സീസണ്‍']):
-        is_series = True
-        season_number = 1
-    if not is_series:
-        return {'is_series': False, 'season_number': None, 'series_name': None}
-    series_name = re.split(r'\s+Season\s+\d|\s+സീസൺ\s+\d', title, 1, re.IGNORECASE)[0].strip()
-    return {'is_series': True, 'season_number': season_number, 'series_name': series_name}
+            return {'is_series': True, 'season_number': season_number, 'series_name': series_name}
+
+    if any(keyword in title.lower() for keyword in ['season', 'series', 'സീസൺ', 'സീസണ്‍']):
+        return {'is_series': True, 'season_number': 1, 'series_name': title}
+
+    return {'is_series': False, 'season_number': None, 'series_name': None}
 
 def scrape_page_details(url: str) -> Optional[Dict]:
     """Scrapes comprehensive details from a movie/series page."""
@@ -525,7 +523,7 @@ async def handle_callback_query(callback_query: dict) -> Optional[Dict]:
         asyncio.create_task(process_download(value, chat_id))
         return {'method': 'answerCallbackQuery', 'callback_query_id': callback_query['id'], 'text': "Please wait, preparing your download..."}
 
-    elif action == 'scpr' and str(chat_id) == OWNER_ID:
+    elif action == 'scpr' and str(user.get('id')) == OWNER_ID:
         task_map = {
             'add': "Please send the malayalamsubtitles.org URL to add.",
             'remove': "Please send the `unique_id` to remove.",
@@ -533,7 +531,7 @@ async def handle_callback_query(callback_query: dict) -> Optional[Dict]:
             'view': "Please send the `unique_id` to view."
         }
         if prompt_text := task_map.get(value):
-            admin_tasks[str(chat_id)] = value
+            admin_tasks[str(user.get('id'))] = value
             return {'method': 'editMessageText', 'text': prompt_text, 'chat_id': chat_id, 'message_id': message['message_id']}
 
     return None
