@@ -286,7 +286,7 @@ def create_search_results_keyboard(results: List[asyncpg.Record]) -> Dict:
     keyboard.append([{'text': '❌ Close', 'callback_data': 'menu_close'}])
     return {'inline_keyboard': keyboard}
 
-def create_detail_keyboard(entry: asyncpg.Record) -> Dict:
+def create_detail_keyboard(entry: asyncpg.Record, photo_msg_id: Optional[int] = None) -> Dict:
     keyboard = []
     if entry.get('srt_url'): keyboard.append([{'text': '📥 Download Subtitle', 'callback_data': f"download_{entry['unique_id']}"}])
 
@@ -295,7 +295,11 @@ def create_detail_keyboard(entry: asyncpg.Record) -> Dict:
     if entry.get('source_url'): buttons.append({'text': '📄 Page Link', 'url': entry['source_url']})
     if buttons: keyboard.append(buttons)
 
-    keyboard.append([{'text': '🔙 Back', 'callback_data': 'menu_home'}, {'text': '❌ Close', 'callback_data': 'menu_close'}])
+    close_callback = 'menu_close'
+    if photo_msg_id:
+        close_callback += f'_{photo_msg_id}'
+
+    keyboard.append([{'text': '🔙 Back', 'callback_data': 'menu_home'}, {'text': '❌ Close', 'callback_data': close_callback}])
     return {'inline_keyboard': keyboard}
 
 def create_scraper_panel_keyboard() -> Dict:
@@ -420,14 +424,25 @@ async def handle_callback_query(callback_query: dict) -> Optional[Dict]:
     action, _, value = callback_query['data'].partition('_')
     message = callback_query['message']
     chat_id = str(message['chat']['id'])
+    user = callback_query.get('from', {})
 
     if action == 'menu':
-        if value == 'close': return {'method': 'deleteMessage', 'chat_id': chat_id, 'message_id': message['message_id']}
+        if value.startswith('close'):
+            # This will handle both 'close' and 'close_12345'
+            parts = value.split('_')
+            # Delete the current message (the one with the button)
+            await send_telegram_message({'method': 'deleteMessage', 'chat_id': chat_id, 'message_id': message['message_id']})
+            # If there's a second ID, delete that message too
+            if len(parts) > 1 and parts[1].isdigit():
+                await send_telegram_message({'method': 'deleteMessage', 'chat_id': chat_id, 'message_id': int(parts[1])})
+            return None # We've handled the response, so we return None
+
         text_map = {'home': WELCOME_MESSAGE, 'about': ABOUT_MESSAGE, 'help': HELP_MESSAGE}
         if text := text_map.get(value):
             return {'method': 'editMessageText', 'text': text, 'reply_markup': create_menu_keyboard(value), 'parse_mode': 'Markdown', 'chat_id': chat_id, 'message_id': message['message_id']}
 
     elif action == 'view' and (entry := await db_pool.fetchrow("SELECT * FROM subtitles WHERE unique_id = $1", value)):
+        # First, delete the message that triggered this view (e.g., the search results)
         await send_telegram_message({'method': 'deleteMessage', 'chat_id': chat_id, 'message_id': message['message_id']})
 
         def format_json_field(data: Optional[str]) -> str:
@@ -438,48 +453,72 @@ async def handle_callback_query(callback_query: dict) -> Optional[Dict]:
             except (json.JSONDecodeError, AttributeError):
                 return str(data) if data else "N/A"
 
-        caption_parts = [f"**{entry['title']}**"]
+        # --- Message 1: Photo ---
+        photo_msg_id = None
+        if entry.get('poster_url'):
+            photo_payload = {
+                'method': 'sendPhoto',
+                'chat_id': chat_id,
+                'photo': entry['poster_url'],
+                'caption': f"**{entry['title']}**",
+                'parse_mode': 'Markdown'
+            }
+            photo_response = await send_telegram_message(photo_payload)
+            if photo_response and photo_response.get('ok'):
+                photo_msg_id = photo_response['result']['message_id']
 
+        # --- Message 2: Details ---
+        details_parts = []
         if msone := format_json_field(entry.get('msone_release')):
-             if msone != "N/A": caption_parts.append(f"**MSone Release:** `{msone}`")
+             if msone != "N/A": details_parts.append(f"**MSone Release:** `{msone}`")
         if director := format_json_field(entry.get('director')):
-            if director != "N/A": caption_parts.append(f"**Director:** {director}")
+            if director != "N/A": details_parts.append(f"**Director:** {director}")
         if lang := format_json_field(entry.get('language')):
-            if lang != "N/A": caption_parts.append(f"**Language:** {lang}")
+            if lang != "N/A": details_parts.append(f"**Language:** {lang}")
         if genre := format_json_field(entry.get('genre')):
-            if genre != "N/A": caption_parts.append(f"**Genre:** {genre}")
+            if genre != "N/A": details_parts.append(f"**Genre:** {genre}")
         if rating := format_json_field(entry.get('imdb_rating')):
-            if rating != "N/A": caption_parts.append(f"**IMDb Rating:** {rating}")
+            if rating != "N/A": details_parts.append(f"**IMDb Rating:** {rating}")
         if cert := format_json_field(entry.get('certification')):
-            if cert != "N/A": caption_parts.append(f"**Certification:** {cert}")
+            if cert != "N/A": details_parts.append(f"**Certification:** {cert}")
         if translator := format_json_field(entry.get('translator')):
-            if translator != "N/A": caption_parts.append(f"**Translated By:** {translator}")
+            if translator != "N/A": details_parts.append(f"**Translated By:** {translator}")
 
         if entry.get('is_series'):
-            caption_parts.append(f"**Season:** {entry.get('season_number', 'N/A')}")
+            details_parts.append(f"**Season:** {entry.get('season_number', 'N/A')}")
             if entry.get('total_seasons'):
-                caption_parts.append(f"**Total Seasons:** {entry['total_seasons']}")
+                details_parts.append(f"**Total Seasons:** {entry['total_seasons']}")
 
         if description := entry.get('description'):
-            caption_parts.append(f"\n**Synopsis:**\n{description}")
+            details_parts.append(f"\n**Synopsis:**\n{description}")
 
-        if str(chat_id) == OWNER_ID:
-            caption_parts.append(f"\n\n**Admin Info:**\n`{entry['unique_id']}`")
+        if str(user.get('id')) == OWNER_ID:
+            details_parts.append(f"\n\n**Admin Info:**\n`{entry['unique_id']}`")
 
-        caption = "\n".join(caption_parts)
+        details_text = "\n".join(details_parts)
 
-        payload = {'chat_id': chat_id, 'caption': caption, 'parse_mode': 'Markdown', 'reply_markup': create_detail_keyboard(entry)}
+        # If photo wasn't sent, send all info in one message
+        if not photo_msg_id:
+            full_caption = f"**{entry['title']}**\n\n{details_text}"
+            payload = {
+                'method': 'sendMessage',
+                'chat_id': chat_id,
+                'text': full_caption,
+                'parse_mode': 'Markdown',
+                'reply_markup': create_detail_keyboard(entry)
+            }
+            await send_telegram_message(payload)
+        else:
+            # Send details in a second message with the smart close button
+            payload = {
+                'method': 'sendMessage',
+                'chat_id': chat_id,
+                'text': details_text,
+                'parse_mode': 'Markdown',
+                'reply_markup': create_detail_keyboard(entry, photo_msg_id)
+            }
+            await send_telegram_message(payload)
 
-        if entry.get('poster_url'):
-            payload.update({'method': 'sendPhoto', 'photo': entry['poster_url']})
-            # If sending photo fails (e.g., bad URL), fall back to text message
-            if (response := await send_telegram_message(payload)) and response.get('ok'):
-                return None
-
-        # Fallback to sending a text message if photo fails or doesn't exist
-        del payload['caption']
-        payload.update({'method': 'sendMessage', 'text': caption})
-        await send_telegram_message(payload)
         return None
 
     elif action == 'download':
