@@ -123,10 +123,10 @@ def scrape_page_details(url: str) -> Optional[Dict]:
             return None
 
         field_mappings = [
-            ('director', ['director', 'സംവിധായകൻ']),
-            ('genre', ['genre', 'വിഭാഗം']),
+            ('director', ['director', 'സംവിധായകൻ', 'നിർമ്മാണം']),
+            ('genre', ['genre', 'വിഭാഗം', 'ജോണർ']),
             ('language', ['language', 'ഭാഷ']),
-            ('translator', ['translator', 'പരിഭാഷകർ', 'പരിഭാഷകൻ']),
+            ('translator', ['translator', 'പരിഭാഷകർ', 'പരിഭാഷകൻ', 'പരിഭാഷ']),
             ('imdb_rating', ['imdb rating', 'imdb', 'ഐ.എം.ഡി.ബി']),
             ('msone_release', ['msone release', 'msone', 'റിലീസ് നം']),
             ('certification', ['certification', 'സെർട്ടിഫിക്കേഷൻ'])
@@ -151,19 +151,24 @@ async def remove_subtitle(unique_id: str) -> bool:
         logger.error(f"Failed to remove subtitle {unique_id}: {e}")
         return False
 
-async def rescrape_subtitle(unique_id: str) -> str:
-    if not db_pool: return "Database not connected."
+async def rescrape_subtitle(unique_id: str) -> bool:
+    if not db_pool: return False
     try:
         record = await db_pool.fetchrow("SELECT source_url FROM subtitles WHERE unique_id = $1", unique_id)
         if not record or not record['source_url']:
-            return f"Rescrape failed: No source_url found for {unique_id}"
+            logger.warning(f"Rescrape failed: No source_url found for {unique_id}")
+            return False
 
-        # Return the URL for debugging
-        return f"Attempting to scrape URL: {record['source_url']}"
-
+        if details := scrape_page_details(record['source_url']):
+            await upsert_subtitle(details)
+            logger.info(f"Successfully rescraped and updated {unique_id}")
+            return True
+        else:
+            logger.error(f"Rescrape failed: Scraping returned no details for {record['source_url']}")
+            return False
     except Exception as e:
-        logger.error(f"Failed to fetch source_url for {unique_id}: {e}")
-        return f"An exception occurred while fetching the URL: {e}"
+        logger.error(f"Failed to rescrape subtitle {unique_id}: {e}")
+        return False
 
 async def init_db():
     global db_pool
@@ -584,8 +589,9 @@ async def handle_telegram_message(message_data: dict) -> Optional[Dict]:
                 return {'chat_id': user_id, 'text': f"✅ Entry `{input_value}` has been removed."}
             return {'chat_id': user_id, 'text': f"❌ Failed to remove entry `{input_value}`."}
         elif task == 'rescrape':
-            debug_output = await rescrape_subtitle(input_value)
-            return {'chat_id': user_id, 'text': debug_output, 'parse_mode': 'Markdown'}
+            if await rescrape_subtitle(input_value):
+                return {'chat_id': user_id, 'text': f"✅ Entry `{input_value}` has been successfully rescraped."}
+            return {'chat_id': user_id, 'text': f"❌ Failed to rescrape entry `{input_value}`."}
         elif task == 'view':
             # Reuse the existing view logic by crafting a fake callback query
             fake_callback = {
