@@ -80,15 +80,17 @@ def _extract_season_info(title: str) -> Dict[str, Any]:
     return {'is_series': False, 'season_number': None, 'series_name': None}
 
 def scrape_page_details(url: str) -> Optional[Dict]:
-    """Scrapes comprehensive details from a movie/series page."""
+    """Scrapes comprehensive details from a movie/series page, handling multiple layouts."""
     soup = _get_soup(url)
     if not soup: return None
     try:
         details = {'source_url': url}
-        title_tag = soup.select_one('h1.entry-title, h1#release-title')
-        details['title'] = _clean_text(title_tag.get_text()) if title_tag else "Unknown Title"
-        details['year'] = _extract_year(details['title'])
-        details.update(_extract_season_info(details['title']))
+
+        # --- Universal Fields ---
+        if title_tag := soup.select_one('h1.entry-title, h1#release-title'):
+            details['title'] = _clean_text(title_tag.get_text())
+        details['year'] = _extract_year(details.get('title', ''))
+        details.update(_extract_season_info(details.get('title', '')))
 
         if srt_tag := soup.select_one('a#download-button'):
             details['srt_url'] = srt_tag.get('data-downloadurl') or srt_tag.get('href')
@@ -96,44 +98,55 @@ def scrape_page_details(url: str) -> Optional[Dict]:
         if poster_tag := soup.select_one('figure#release-poster img, .entry-content figure img'):
             if src := poster_tag.get('src'): details['poster_url'] = urljoin(BASE_URL, src)
 
-        if imdb_tag := soup.select_one('a#imdb-button, a[href*="imdb.com"]'):
-            details['imdb_url'] = imdb_tag.get('href')
+        if imdb_anchor := soup.select_one('a#imdb-button, a[href*="imdb.com"]'):
+            details['imdb_url'] = imdb_anchor.get('href')
             details['imdb_id'] = _extract_imdb_id(details['imdb_url'])
+            if rating_tag := imdb_anchor.find_next_sibling('p'):
+                details['imdb_rating'] = {'name': _clean_text(rating_tag.get_text())}
 
         if desc_tag := soup.select_one('div#synopsis, .entry-content p'):
             details['description'] = _clean_text(desc_tag.get_text(separator='\n', strip=True))
 
+        if release_num_tag := soup.select_one('h4#release-number'):
+            if 'എംസോൺ റിലീസ്' in release_num_tag.get_text():
+                 details['msone_release'] = {'name': _clean_text(release_num_tag.get_text()).split('–')[-1].strip()}
+
+        if cert_tag := soup.select_one('#release-type-button + p a'):
+             details['certification'] = {'name': _clean_text(cert_tag.get_text())}
+
+        # --- Table-based Fields ---
         details_table = soup.select_one('#release-details-table tbody')
-        table_data = {}
         if details_table:
+            table_data = {}
             for row in details_table.select('tr'):
                 cells = row.select('td')
                 if len(cells) >= 2:
                     label = _clean_text(cells[0].get_text()).lower().strip().replace(':', '')
                     table_data[label] = cells[1]
 
-        def get_field_data(labels):
-            for label in labels:
-                if label in table_data:
-                    cell = table_data[label]
-                    text = _clean_text(cell.get_text())
-                    link_tag = cell.select_one('a')
-                    url = urljoin(BASE_URL, link_tag['href']) if link_tag and link_tag.has_attr('href') else None
-                    return {'name': text, 'url': url}
-            return None
+            def get_field_from_table(labels):
+                for label in labels:
+                    if label in table_data:
+                        cell = table_data[label]
+                        # Handle multiple links in one cell (e.g., multiple translators)
+                        links = cell.select('a')
+                        if links:
+                            names = [_clean_text(a.get_text()) for a in links]
+                            urls = [urljoin(BASE_URL, a['href']) for a in links if a.has_attr('href')]
+                            return {'name': ", ".join(names), 'url': urls[0] if urls else None}
+                        else:
+                            return {'name': _clean_text(cell.get_text()), 'url': None}
+                return None
 
-        field_mappings = [
-            ('director', ['director', 'സംവിധായകൻ', 'നിർമ്മാണം']),
-            ('genre', ['genre', 'വിഭാഗം', 'ജോണർ']),
-            ('language', ['language', 'ഭാഷ']),
-            ('translator', ['translator', 'പരിഭാഷകർ', 'പരിഭാഷകൻ', 'പരിഭാഷ']),
-            ('imdb_rating', ['imdb rating', 'imdb', 'ഐ.എം.ഡി.ബി']),
-            ('msone_release', ['msone release', 'msone', 'റിലീസ് നം']),
-            ('certification', ['certification', 'സെർട്ടിഫിക്കേഷൻ'])
-        ]
-        for field_name, labels in field_mappings:
-            if field_value := get_field_data(labels):
-                details[field_name] = field_value
+            field_mappings = [
+                ('director', ['director', 'സംവിധായകൻ', 'നിർമ്മാണം', 'സംവിധാനം']),
+                ('genre', ['genre', 'വിഭാഗം', 'ജോണർ']),
+                ('language', ['language', 'ഭാഷ']),
+                ('translator', ['translator', 'പരിഭാഷകർ', 'പരിഭാഷകൻ', 'പരിഭാഷ']),
+            ]
+            for field_name, labels in field_mappings:
+                if field_value := get_field_from_table(labels):
+                    details[field_name] = field_value
 
         return details
     except Exception:
