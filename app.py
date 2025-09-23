@@ -32,6 +32,7 @@ BASE_URL = "https://malayalamsubtitles.org"
 
 # --- Global Variables ---
 db_pool: Optional[asyncpg.Pool] = None
+admin_tasks: Dict[str, str] = {} # To track next action for owner
 
 # --- Menu Messages ---
 WELCOME_MESSAGE = "**🎬 Welcome to Malayalam Subtitle Search Bot!**\n\nYour one-stop destination for high-quality Malayalam subtitles for movies and TV shows."
@@ -46,10 +47,10 @@ AHELP_MESSAGE = """
 - `/ahelp`: Show this help message.
 """
 
-# --- Self-Contained Scraper Logic ---
+# --- Self-Contained Scraper Logic (from scraper.py) ---
 def _get_soup(url: str) -> Optional[BeautifulSoup]:
     try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
         response = requests.get(url, headers=headers, timeout=20)
         response.raise_for_status()
         return BeautifulSoup(response.text, 'html.parser')
@@ -59,37 +60,117 @@ def _get_soup(url: str) -> Optional[BeautifulSoup]:
 
 def _clean_text(text: str) -> str: return re.sub(r'\s+', ' ', text.strip()) if text else ""
 def _extract_imdb_id(url: str) -> Optional[str]: return match.group(0) if (match := re.search(r'tt\d+', url or "")) else None
+def _extract_year(title: str) -> Optional[str]: return match.group(1) if (match := re.search(r'\((\d{4})\)', title)) else None
+
 def _extract_season_info(title: str) -> Dict[str, Any]:
     patterns = [r'Season\s*(\d+)', r'സീസൺ\s*(\d+)', r'S0?(\d+)', r'സീസണ്‍\s*(\d+)']
+    is_series = False
+    season_number = None
     for pattern in patterns:
         match = re.search(pattern, title, re.IGNORECASE)
         if match:
-            series_name = re.split(r'\s+Season\s+\d|\s+സീസൺ\s+\d', title, 1, re.IGNORECASE)[0].strip()
-            return {'is_series': True, 'season_number': int(match.group(1)), 'series_name': series_name}
-    return {'is_series': False, 'season_number': None, 'series_name': None}
+            season_number = int(match.group(1))
+            is_series = True
+            break
+    if not is_series and any(keyword in title.lower() for keyword in ['season', 'series', 'സീസൺ', 'സീസണ്‍']):
+        is_series = True
+        season_number = 1
+    if not is_series:
+        return {'is_series': False, 'season_number': None, 'series_name': None}
+    series_name = re.split(r'\s+Season\s+\d|\s+സീസൺ\s+\d', title, 1, re.IGNORECASE)[0].strip()
+    return {'is_series': True, 'season_number': season_number, 'series_name': series_name}
 
 def scrape_page_details(url: str) -> Optional[Dict]:
+    """Scrapes comprehensive details from a movie/series page."""
     soup = _get_soup(url)
     if not soup: return None
     try:
         details = {'source_url': url}
-        details['title'] = _clean_text(soup.select_one('h1.entry-title, h1#release-title').get_text())
+        title_tag = soup.select_one('h1.entry-title, h1#release-title')
+        details['title'] = _clean_text(title_tag.get_text()) if title_tag else "Unknown Title"
+        details['year'] = _extract_year(details['title'])
         details.update(_extract_season_info(details['title']))
+
+        if srt_tag := soup.select_one('a#download-button'):
+            details['srt_url'] = srt_tag.get('data-downloadurl') or srt_tag.get('href')
+
+        if poster_tag := soup.select_one('figure#release-poster img, .entry-content figure img'):
+            if src := poster_tag.get('src'): details['poster_url'] = urljoin(BASE_URL, src)
+
         if imdb_tag := soup.select_one('a#imdb-button, a[href*="imdb.com"]'):
             details['imdb_url'] = imdb_tag.get('href')
             details['imdb_id'] = _extract_imdb_id(details['imdb_url'])
-        if srt_tag := soup.select_one('a#download-button'):
-            details['srt_url'] = srt_tag.get('data-downloadurl') or srt_tag.get('href')
-        if poster_tag := soup.select_one('figure#release-poster img, .entry-content figure img'):
-            details['poster_url'] = urljoin(BASE_URL, poster_tag['src'])
+
         if desc_tag := soup.select_one('div#synopsis, .entry-content p'):
             details['description'] = _clean_text(desc_tag.get_text(separator='\n', strip=True))
+
+        details_table = soup.select_one('#release-details-table tbody')
+        table_data = {}
+        if details_table:
+            for row in details_table.select('tr'):
+                cells = row.select('td')
+                if len(cells) >= 2:
+                    label = _clean_text(cells[0].get_text()).lower().strip().replace(':', '')
+                    table_data[label] = cells[1]
+
+        def get_field_data(labels):
+            for label in labels:
+                if label in table_data:
+                    cell = table_data[label]
+                    text = _clean_text(cell.get_text())
+                    link_tag = cell.select_one('a')
+                    url = urljoin(BASE_URL, link_tag['href']) if link_tag and link_tag.has_attr('href') else None
+                    return {'name': text, 'url': url}
+            return None
+
+        field_mappings = [
+            ('director', ['director', 'സംവിധായകൻ']),
+            ('genre', ['genre', 'വിഭാഗം']),
+            ('language', ['language', 'ഭാഷ']),
+            ('translator', ['translator', 'പരിഭാഷകർ', 'പരിഭാഷകൻ']),
+            ('imdb_rating', ['imdb rating', 'imdb', 'ഐ.എം.ഡി.ബി']),
+            ('msone_release', ['msone release', 'msone', 'റിലീസ് നം']),
+            ('certification', ['certification', 'സെർട്ടിഫിക്കേഷൻ'])
+        ]
+        for field_name, labels in field_mappings:
+            if field_value := get_field_data(labels):
+                details[field_name] = field_value
+
         return details
-    except Exception as e:
-        logger.error(f"Full scraping failed for {url}: {e}")
+    except Exception:
+        logger.exception(f"Full scraping failed for {url}")
         return None
 
 # --- Database Functions ---
+async def remove_subtitle(unique_id: str) -> bool:
+    if not db_pool: return False
+    try:
+        result = await db_pool.execute("DELETE FROM subtitles WHERE unique_id = $1", unique_id)
+        # "DELETE 1" on success, "DELETE 0" on no-op
+        return result.endswith('1')
+    except Exception as e:
+        logger.error(f"Failed to remove subtitle {unique_id}: {e}")
+        return False
+
+async def rescrape_subtitle(unique_id: str) -> bool:
+    if not db_pool: return False
+    try:
+        record = await db_pool.fetchrow("SELECT source_url FROM subtitles WHERE unique_id = $1", unique_id)
+        if not record or not record['source_url']:
+            logger.warning(f"Rescrape failed: No source_url found for {unique_id}")
+            return False
+
+        if details := scrape_page_details(record['source_url']):
+            await upsert_subtitle(details)
+            logger.info(f"Successfully rescraped and updated {unique_id}")
+            return True
+        else:
+            logger.error(f"Rescrape failed: Scraping returned no details for {record['source_url']}")
+            return False
+    except Exception as e:
+        logger.error(f"Failed to rescrape subtitle {unique_id}: {e}")
+        return False
+
 async def init_db():
     global db_pool
     try:
@@ -98,9 +179,28 @@ async def init_db():
             await conn.execute("CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY);")
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS subtitles (
-                    unique_id TEXT PRIMARY KEY, imdb_id TEXT, source_url TEXT, scraped_at TIMESTAMPTZ,
-                    title TEXT, year INTEGER, is_series BOOLEAN, season_number INTEGER, series_name TEXT,
-                    srt_url TEXT, poster_url TEXT, imdb_url TEXT, description TEXT
+                    unique_id TEXT PRIMARY KEY,
+                    imdb_id TEXT,
+                    source_url TEXT,
+                    scraped_at TIMESTAMPTZ,
+                    title TEXT,
+                    year INTEGER,
+                    is_series BOOLEAN,
+                    season_number INTEGER,
+                    series_name TEXT,
+                    total_seasons INTEGER,
+                    srt_url TEXT,
+                    poster_url TEXT,
+                    imdb_url TEXT,
+                    description TEXT,
+                    director TEXT,
+                    genre TEXT,
+                    language TEXT,
+                    translator TEXT,
+                    imdb_rating TEXT,
+                    msone_release TEXT,
+                    certification TEXT,
+                    poster_maker TEXT
                 );
             """)
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_subtitles_imdb_id ON subtitles (imdb_id);")
@@ -113,16 +213,53 @@ async def init_db():
 
 async def upsert_subtitle(details: dict):
     if not db_pool or not details.get('imdb_id'): return
-    season_info = _extract_season_info(details.get('title', ''))
-    unique_id = f"{details['imdb_id']}-S{season_info['season_number']}" if season_info.get('is_series') else details['imdb_id']
+
+    unique_id = f"{details['imdb_id']}-S{details['season_number']}" if details.get('is_series') else details['imdb_id']
+
+    db_record = {
+        'unique_id': unique_id,
+        'imdb_id': details.get('imdb_id'),
+        'source_url': details.get('source_url'),
+        'scraped_at': datetime.now(),
+        'title': details.get('title'),
+        'year': int(details['year']) if details.get('year') else None,
+        'is_series': details.get('is_series'),
+        'season_number': details.get('season_number'),
+        'series_name': details.get('series_name'),
+        'total_seasons': None, # This will be updated by a separate process
+        'srt_url': details.get('srt_url'),
+        'poster_url': details.get('poster_url'),
+        'imdb_url': details.get('imdb_url'),
+        'description': details.get('description'),
+        'director': json.dumps(details.get('director')) if details.get('director') else None,
+        'genre': json.dumps(details.get('genre')) if details.get('genre') else None,
+        'language': json.dumps(details.get('language')) if details.get('language') else None,
+        'translator': json.dumps(details.get('translator')) if details.get('translator') else None,
+        'imdb_rating': json.dumps(details.get('imdb_rating')) if details.get('imdb_rating') else None,
+        'msone_release': json.dumps(details.get('msone_release')) if details.get('msone_release') else None,
+        'certification': json.dumps(details.get('certification')) if details.get('certification') else None,
+        'poster_maker': json.dumps(details.get('poster_maker')) if details.get('poster_maker') else None,
+    }
+
     query = """
-        INSERT INTO subtitles (unique_id, imdb_id, title, source_url, scraped_at, srt_url, poster_url, imdb_url, description, is_series, season_number, series_name)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        INSERT INTO subtitles (
+            unique_id, imdb_id, source_url, scraped_at, title, year, is_series,
+            season_number, series_name, total_seasons, srt_url, poster_url, imdb_url,
+            description, director, genre, language, translator, imdb_rating,
+            msone_release, certification, poster_maker
+        ) VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22
+        )
         ON CONFLICT (unique_id) DO UPDATE SET
-            title = EXCLUDED.title, scraped_at = EXCLUDED.scraped_at, srt_url = EXCLUDED.srt_url,
-            poster_url = EXCLUDED.poster_url, imdb_url = EXCLUDED.imdb_url, description = EXCLUDED.description;
+            source_url = EXCLUDED.source_url, scraped_at = EXCLUDED.scraped_at, title = EXCLUDED.title,
+            year = EXCLUDED.year, is_series = EXCLUDED.is_series, season_number = EXCLUDED.season_number,
+            series_name = EXCLUDED.series_name, srt_url = EXCLUDED.srt_url, poster_url = EXCLUDED.poster_url,
+            imdb_url = EXCLUDED.imdb_url, description = EXCLUDED.description, director = EXCLUDED.director,
+            genre = EXCLUDED.genre, language = EXCLUDED.language, translator = EXCLUDED.translator,
+            imdb_rating = EXCLUDED.imdb_rating, msone_release = EXCLUDED.msone_release,
+            certification = EXCLUDED.certification, poster_maker = EXCLUDED.poster_maker;
     """
-    await db_pool.execute(query, unique_id, details['imdb_id'], details.get('title'), details.get('source_url'), datetime.now(), details.get('srt_url'), details.get('poster_url'), details.get('imdb_url'), details.get('description'), season_info['is_series'], season_info['season_number'], season_info['series_name'])
+    await db_pool.execute(query, *db_record.values())
 
 async def add_user(user_id: int):
     if not db_pool: return
@@ -152,9 +289,23 @@ def create_search_results_keyboard(results: List[asyncpg.Record]) -> Dict:
 def create_detail_keyboard(entry: asyncpg.Record) -> Dict:
     keyboard = []
     if entry.get('srt_url'): keyboard.append([{'text': '📥 Download Subtitle', 'callback_data': f"download_{entry['unique_id']}"}])
-    if entry.get('imdb_url'): keyboard.append([{'text': '🎬 View on IMDb', 'url': entry['imdb_url']}])
+
+    buttons = []
+    if entry.get('imdb_url'): buttons.append({'text': '🎬 View on IMDb', 'url': entry['imdb_url']})
+    if entry.get('source_url'): buttons.append({'text': '📄 Page Link', 'url': entry['source_url']})
+    if buttons: keyboard.append(buttons)
+
     keyboard.append([{'text': '🔙 Back', 'callback_data': 'menu_home'}, {'text': '❌ Close', 'callback_data': 'menu_close'}])
     return {'inline_keyboard': keyboard}
+
+def create_scraper_panel_keyboard() -> Dict:
+    buttons = [
+        {'text': "➕ Add", 'callback_data': 'scpr_add'},
+        {'text': "➖ Remove", 'callback_data': 'scpr_remove'},
+        {'text': "🔄 Rescrape", 'callback_data': 'scpr_rescrape'},
+        {'text': "👁️ View", 'callback_data': 'scpr_view'},
+    ]
+    return {'inline_keyboard': [buttons, [{'text': '❌ Close', 'callback_data': 'menu_close'}]]}
 
 async def run_broadcast(message: dict):
     owner_id = message['from']['id']
@@ -278,20 +429,73 @@ async def handle_callback_query(callback_query: dict) -> Optional[Dict]:
 
     elif action == 'view' and (entry := await db_pool.fetchrow("SELECT * FROM subtitles WHERE unique_id = $1", value)):
         await send_telegram_message({'method': 'deleteMessage', 'chat_id': chat_id, 'message_id': message['message_id']})
-        caption = f"**{entry['title']}**\n"
-        if entry.get('year'): caption += f"**Year:** {entry['year']}\n"
-        if entry.get('description'): caption += f"\n**Synopsis:**\n{entry['description']}"
+
+        def format_json_field(data: Optional[str]) -> str:
+            if not data: return "N/A"
+            try:
+                field_data = json.loads(data)
+                return field_data.get('name', 'N/A')
+            except (json.JSONDecodeError, AttributeError):
+                return str(data) if data else "N/A"
+
+        caption_parts = [f"**{entry['title']}**"]
+
+        if msone := format_json_field(entry.get('msone_release')):
+             if msone != "N/A": caption_parts.append(f"**MSone Release:** `{msone}`")
+        if director := format_json_field(entry.get('director')):
+            if director != "N/A": caption_parts.append(f"**Director:** {director}")
+        if lang := format_json_field(entry.get('language')):
+            if lang != "N/A": caption_parts.append(f"**Language:** {lang}")
+        if genre := format_json_field(entry.get('genre')):
+            if genre != "N/A": caption_parts.append(f"**Genre:** {genre}")
+        if rating := format_json_field(entry.get('imdb_rating')):
+            if rating != "N/A": caption_parts.append(f"**IMDb Rating:** {rating}")
+        if cert := format_json_field(entry.get('certification')):
+            if cert != "N/A": caption_parts.append(f"**Certification:** {cert}")
+        if translator := format_json_field(entry.get('translator')):
+            if translator != "N/A": caption_parts.append(f"**Translated By:** {translator}")
+
+        if entry.get('is_series'):
+            caption_parts.append(f"**Season:** {entry.get('season_number', 'N/A')}")
+            if entry.get('total_seasons'):
+                caption_parts.append(f"**Total Seasons:** {entry['total_seasons']}")
+
+        if description := entry.get('description'):
+            caption_parts.append(f"\n**Synopsis:**\n{description}")
+
+        if str(chat_id) == OWNER_ID:
+            caption_parts.append(f"\n\n**Admin Info:**\n`{entry['unique_id']}`")
+
+        caption = "\n".join(caption_parts)
+
         payload = {'chat_id': chat_id, 'caption': caption, 'parse_mode': 'Markdown', 'reply_markup': create_detail_keyboard(entry)}
+
         if entry.get('poster_url'):
             payload.update({'method': 'sendPhoto', 'photo': entry['poster_url']})
-            if (response := await send_telegram_message(payload)) and response.get('ok'): return None
-        del payload['caption']; payload.update({'method': 'sendMessage', 'text': caption})
+            # If sending photo fails (e.g., bad URL), fall back to text message
+            if (response := await send_telegram_message(payload)) and response.get('ok'):
+                return None
+
+        # Fallback to sending a text message if photo fails or doesn't exist
+        del payload['caption']
+        payload.update({'method': 'sendMessage', 'text': caption})
         await send_telegram_message(payload)
         return None
 
     elif action == 'download':
         asyncio.create_task(process_download(value, chat_id))
         return {'method': 'answerCallbackQuery', 'callback_query_id': callback_query['id'], 'text': "Please wait, preparing your download..."}
+
+    elif action == 'scpr' and str(chat_id) == OWNER_ID:
+        task_map = {
+            'add': "Please send the malayalamsubtitles.org URL to add.",
+            'remove': "Please send the `unique_id` to remove.",
+            'rescrape': "Please send the `unique_id` to rescrape.",
+            'view': "Please send the `unique_id` to view."
+        }
+        if prompt_text := task_map.get(value):
+            admin_tasks[str(chat_id)] = value
+            return {'method': 'editMessageText', 'text': prompt_text, 'chat_id': chat_id, 'message_id': message['message_id']}
 
     return None
 
@@ -319,6 +523,34 @@ async def handle_telegram_message(message_data: dict) -> Optional[Dict]:
     text = message.get('text', '').strip()
     if not text: return None
 
+    # --- Handle pending admin tasks ---
+    if str(user_id) == OWNER_ID and (task := admin_tasks.pop(str(user_id), None)):
+        input_value = text
+        if task == 'add':
+            if details := scrape_page_details(input_value):
+                await upsert_subtitle(details)
+                return {'chat_id': user_id, 'text': f"✅ Added/Updated: **{details['title']}**"}
+            return {'chat_id': user_id, 'text': f"❌ Failed to scrape or add entry for URL: {input_value}"}
+        elif task == 'remove':
+            if await remove_subtitle(input_value):
+                return {'chat_id': user_id, 'text': f"✅ Entry `{input_value}` has been removed."}
+            return {'chat_id': user_id, 'text': f"❌ Failed to remove entry `{input_value}`."}
+        elif task == 'rescrape':
+            if await rescrape_subtitle(input_value):
+                return {'chat_id': user_id, 'text': f"✅ Entry `{input_value}` has been rescraped."}
+            return {'chat_id': user_id, 'text': f"❌ Failed to rescrape entry `{input_value}`."}
+        elif task == 'view':
+            # Reuse the existing view logic by crafting a fake callback query
+            fake_callback = {
+                'data': f'view_{input_value}',
+                'message': message,
+                'from': user
+            }
+            if response := await handle_callback_query(fake_callback):
+                await send_telegram_message(response)
+            return None
+
+
     if text.startswith('/'): # Commands
         command, *args = text.split()
         if command == '/start': return {'chat_id': user_id, 'text': WELCOME_MESSAGE, 'reply_markup': create_menu_keyboard('home')}
@@ -326,6 +558,9 @@ async def handle_telegram_message(message_data: dict) -> Optional[Dict]:
         if str(user_id) == OWNER_ID:
             if command == '/ahelp':
                 return {'chat_id': user_id, 'text': AHELP_MESSAGE, 'parse_mode': 'Markdown'}
+
+            if command == '/scpr':
+                return {'chat_id': user_id, 'text': "🛠️ Admin Scraper Panel", 'reply_markup': create_scraper_panel_keyboard()}
 
             if command == '/stats':
                 if not db_pool: return {'chat_id': user_id, 'text': "Database not connected."}
