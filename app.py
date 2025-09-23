@@ -575,7 +575,7 @@ async def handle_telegram_message(message_data: dict) -> Optional[Dict]:
 
     # --- Handle pending feedback tasks ---
     if feedback_tasks.pop(user_id, False):
-        if LOG_GROUP_ID:
+        if OWNER_ID:
             user_info = f"New Feedback from:\n"
             user_info += f"- Name: {user.get('first_name')}\n"
             if username := user.get('username'):
@@ -588,13 +588,13 @@ async def handle_telegram_message(message_data: dict) -> Optional[Dict]:
 
             await send_telegram_message({
                 'method': 'sendMessage',
-                'chat_id': LOG_GROUP_ID,
+                'chat_id': OWNER_ID,
                 'text': log_message,
                 'parse_mode': 'Markdown'
             })
             return {'chat_id': user_id, 'text': "✅ Thank you, your feedback has been sent."}
         else:
-            logger.warning("Feedback received but no LOG_GROUP_ID is set to send it to.")
+            logger.warning("Feedback received but no OWNER_ID is set to forward it to.")
             return {'chat_id': user_id, 'text': "Sorry, I couldn't send your feedback at this time."}
 
     if not text: return None
@@ -616,15 +616,22 @@ async def handle_telegram_message(message_data: dict) -> Optional[Dict]:
                 return {'chat_id': user_id, 'text': f"✅ Entry `{input_value}` has been successfully rescraped."}
             return {'chat_id': user_id, 'text': f"❌ Failed to rescrape entry `{input_value}`."}
         elif task == 'view':
-            # Reuse the existing view logic by crafting a fake callback query
-            fake_callback = {
-                'data': f'view_{input_value}',
-                'message': message,
-                'from': user
-            }
-            if response := await handle_callback_query(fake_callback):
-                await send_telegram_message(response)
-            return None
+            if not db_pool: return {'chat_id': user_id, 'text': "Database not connected."}
+            entry = await db_pool.fetchrow("SELECT * FROM subtitles WHERE unique_id = $1", input_value)
+            if not entry:
+                return {'chat_id': user_id, 'text': f"No entry found with id `{input_value}`"}
+
+            # Convert record to a serializable dict, ensuring all values are strings
+            pretty_data = {key: str(value) for key, value in dict(entry).items()}
+            json_output = json.dumps(pretty_data, indent=2, ensure_ascii=False)
+
+            message_text = f"Raw data for `{input_value}`:\n```json\n{json_output}```"
+
+            # Truncate message if it's too long for Telegram
+            if len(message_text) > 4096:
+                message_text = message_text[:4090] + "\n...```"
+
+            return {'chat_id': user_id, 'text': message_text, 'parse_mode': 'Markdown'}
 
 
     if text.startswith('/'): # Commands
